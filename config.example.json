@@ -1,0 +1,28 @@
+{
+  "_comment": "Copy to ~/.claude/agent-speak/config.json. Every key is optional and overrides the matching default in scripts/speak.ps1. It lives outside the plugin so a plugin update cannot overwrite your settings. Never put your API key here - it is read from the environment variable named by ElevenKeyVar.",
+
+  "UseElevenLabs": true,
+  "ElevenKeyVar": "ELEVENLABS_API_KEY",
+
+  "_voice": "A premade voice id works on every plan. Voice Library voices need a paid plan; on the free tier the API returns 402 and speech drops silently to the Windows SAPI voice.",
+  "ElevenVoiceId": "21m00Tcm4TlvDq8ikWAM",
+  "ElevenModel": "eleven_flash_v2_5",
+  "ElevenSpeed": 1.0,
+  "ElevenStability": 0.5,
+  "ElevenSimilarity": 0.75,
+
+  "_cost": "Every character here is billed. The end-of-turn cue is one short sentence; this cap only bites when you play a full response back.",
+  "MaxCharsManual": 6000,
+
+  "_fallback": "Used when no key or voice id is configured. Free, offline, robotic.",
+  "Rate": 1,
+  "Volume": 90,
+  "VoiceName": "",
+
+  "_controls": "Seek step for the skip keys, and how often the player checks for a pause.",
+  "SeekStepMs": 10000,
+  "PollMs": 120,
+
+  "_replay": "Replaying skips assistant messages shorter than this, so 'Playing.' is never what gets read back.",
+  "MinReplayChars": 400
+}
