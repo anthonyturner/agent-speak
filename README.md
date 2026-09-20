@@ -14,6 +14,10 @@ hundred characters of a document narrated at you. This reads a **handover**
 instead: one sentence saying the work is finished and what you do next. The
 answer itself stays on screen until you ask for it.
 
+**How it works underneath:** [Design notes](DESIGN-NOTES.md) — why it speaks a
+handover instead of the response, why the media keys use a low-level hook, and
+the job object that silently killed detached playback.
+
 > **Windows only for now.** The speech engine uses Windows APIs (MCI for
 > pausable playback, SAPI5 as the offline voice, a low-level keyboard hook for
 > the media keys). Installing on macOS or Linux is harmless — every hook exits
@@ -31,7 +35,7 @@ answer itself stays on screen until you ask for it.
 ## Install
 
 ```
-/plugin marketplace add <your-org>/agent-speak
+/plugin marketplace add anthonyturner/agent-speak
 /plugin install agent-speak
 ```
 
