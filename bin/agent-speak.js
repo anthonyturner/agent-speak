@@ -219,6 +219,38 @@ function main() {
       console.log('listening');
       break;
 
+    // -- voice ---------------------------------------------------------------
+    // The query is joined back from the remaining argv rather than taken as
+    // rest[1], so an unquoted two-word name still resolves.
+    case 'voice': {
+      const action = rest[0] || 'list';
+      const query = rest.slice(1).join(' ').trim();
+
+      if (action === 'list') {
+        runPowerShell(SPEAK, ['-Voices']);
+        return;
+      }
+
+      if (action === 'set' || action === 'preview') {
+        if (!query) {
+          console.error(`agent-speak voice ${action} <name or id>`);
+          process.exit(2);
+        }
+        if (action === 'set') {
+          runPowerShell(SPEAK, ['-SetVoice', query]);
+          return;
+        }
+        // Detached for the same reason speak is: the sample keeps playing after
+        // the turn ends, and stays pausable while it does.
+        runPowerShell(SPEAK, ['-PreviewVoice', query], { detached: true });
+        console.log('previewing');
+        break;
+      }
+
+      console.error('agent-speak voice <list|set|preview> [name or id]');
+      process.exit(2);
+    }
+
     case 'diag':
     case 'doctor':
       runPowerShell(SPEAK, ['-Diag']);
@@ -226,7 +258,7 @@ function main() {
 
     default:
       console.log(
-        'agent-speak <play|speak|stop|pause|resume|toggle|status|forward|rewind|hotkeys|diag>'
+        'agent-speak <play|speak|voice|stop|pause|resume|toggle|status|forward|rewind|hotkeys|diag>'
       );
       break;
   }

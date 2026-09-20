@@ -1,0 +1,14 @@
+{
+  "name": "agent-speak",
+  "description": "Your agent tells you it is done, out loud, in one line - then reads the full answer back on request.",
+  "owner": {
+    "name": "Anthony Turner"
+  },
+  "plugins": [
+    {
+      "name": "agent-speak",
+      "source": "./",
+      "description": "Spoken handover cues at the end of every turn, with pause, resume and skip. ElevenLabs when a key is set, Windows SAPI5 offline otherwise. Windows only."
+    }
+  ]
+}

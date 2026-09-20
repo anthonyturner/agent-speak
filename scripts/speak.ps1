@@ -22,6 +22,13 @@
     Set $RandomizeVoice below to make randomising permanent. Otherwise $ElevenVoiceId
     is used, and it is also the fallback whenever a random pick cannot be synthesised.
 
+    Picking a voice, as a loop - see what there is, hear one, keep it:
+      -Voices               list every voice on the account, marking the one in use
+      -PreviewVoice <q>     speak a sample line in that voice, changing nothing
+      -SetVoice <q>         make it the default, written to config.json
+    <q> is a voice id or any part of a voice name; an ambiguous name lists the
+    candidates rather than guessing between them.
+
     Add -Print to see what would be spoken instead of speaking it.
     Nothing is written to stdout otherwise, so a hook never pollutes the transcript.
 #>
@@ -33,6 +40,9 @@ param(
     [switch]$RandomVoice,
     [switch]$Print,
     [switch]$Diag,
+    [switch]$Voices,
+    [string]$SetVoice = '',
+    [string]$PreviewVoice = '',
     [string]$Preamble = '',
     [switch]$Stop,
     [switch]$Pause,
@@ -107,6 +117,19 @@ $VoiceCacheHours  = 24      # how long the account's voice list is reused before
 # -----------------------------------------------------------------------------
 
 $ErrorActionPreference = 'Stop'
+# The single most expensive line in this file, by its absence.
+#
+# Windows PowerShell 5.1 redraws a console progress bar for every chunk that
+# Invoke-WebRequest -OutFile writes, and the redraw costs far more than the
+# transfer. Measured on one 1500-character request: 44.6 s with the bar,
+# 3.1 s without it - the same bytes, fourteen times faster. Nothing is
+# rendering that bar anyway, because speech runs in a hidden window.
+#
+# It was also silently capping how much could ever be spoken: at that rate a
+# request longer than roughly 700 characters exceeded $ElevenTimeoutSec, so a
+# long reply did not merely lag - it timed out and fell back to the robotic
+# SAPI5 voice, with the failure looking like an ElevenLabs problem.
+$ProgressPreference = 'SilentlyContinue'
 # Everything this tool owns lives in one folder, rather than scattering dotfiles
 # through ~/.claude. It sits outside the plugin directory on purpose: a plugin
 # update replaces the plugin, and a user's voice choice must survive that.
@@ -679,6 +702,164 @@ function Invoke-ElevenApi([string]$key, [string]$path) {
     }
 }
 
+# ------------------------------------------------------------- voice picker --
+# Picking a voice is a loop: see what the account has, hear one, keep it. Each
+# step is its own switch so the agent can drive them separately, and none of
+# them keeps a list of its own - the account is the only source of truth for
+# what exists, so a voice added or removed in the dashboard needs no change here.
+
+function Get-VoiceCatalog {
+    # Every voice on the account, or @() if it cannot be read. Deliberately does
+    # not throw and does not consult $voiceCacheFile: that cache holds ids only,
+    # for the random picker, and a person choosing a voice needs the names.
+    $key = Get-ElevenKey
+    if (-not $key) { return @() }
+    $r = Invoke-ElevenApi $key 'voices'
+    if ($r.Code -ne 200) { return @() }
+    try { return @(($r.Body | ConvertFrom-Json).voices) } catch { return @() }
+}
+
+function Resolve-VoiceQuery([string]$query) {
+    # A query is an exact voice id or any part of a name. Returns one of Voice,
+    # Matches or Error so the caller can word its own report - set and preview
+    # resolve identically but say different things about the result.
+    #
+    # Never guesses between candidates. Voice ids are opaque and the names are
+    # short, so 'Sarah' matching two voices is far more likely to be an
+    # ambiguity than a preference, and picking one silently would be heard
+    # rather than read - the worst place to hide a wrong guess.
+    $query = "$query".Trim()
+    if (-not $query) { return @{ Error = 'no voice given' } }
+
+    $all = Get-VoiceCatalog
+    if ($all.Count -eq 0) {
+        return @{ Error = 'could not read the account voice list - check the key, its Voices read permission, and the network' }
+    }
+
+    $exact = @($all | Where-Object { $_.voice_id -eq $query })
+    if ($exact.Count -eq 1) { return @{ Voice = $exact[0] } }
+
+    # name match, tightest first: whole name, then prefix, then anywhere
+    foreach ($test in @(
+        { $_.name -ieq $query },
+        { $_.name -ilike "$query*" },
+        { $_.name -ilike "*$query*" }
+    )) {
+        $hits = @($all | Where-Object $test)
+        if ($hits.Count -eq 1) { return @{ Voice = $hits[0] } }
+        if ($hits.Count -gt 1) { return @{ Matches = $hits } }
+    }
+    return @{ Error = "no voice on the account matches '$query'" }
+}
+
+function Write-VoiceRows($rows) {
+    foreach ($v in $rows) {
+        $mark = if ($v.voice_id -eq $ElevenVoiceId) { '*' } else { ' ' }
+        # 44 fits the longest premade name ElevenLabs currently ships; a longer one
+        # pushes its own row out rather than padding all 26 for one outlier.
+        Write-Output ('{0} {1,-44} {2,-13} {3}' -f $mark, $v.name, $v.category, $v.voice_id)
+    }
+}
+
+function Show-Voices {
+    $all = Get-VoiceCatalog
+    if ($all.Count -eq 0) {
+        Write-Output 'No voices could be read - the key is missing, lacks Voices read, or the network is down.'
+        Write-Output 'Run -Diag for the full engine configuration.'
+        return
+    }
+    Write-VoiceRows ($all | Sort-Object category, name)
+    Write-Output ''
+    $byCat = ($all | Group-Object category | ForEach-Object { "$($_.Count) $($_.Name)" }) -join ', '
+    Write-Output ("{0} voices ({1}). * is the one in use." -f $all.Count, $byCat)
+    # A list with no way to act on it is a wall of ids. Said in this script's own
+    # switches; the slash command restates it in its own vocabulary for the agent.
+    Write-Output 'Hear one:  -PreviewVoice <name or id>     Keep one:  -SetVoice <name or id>'
+
+    # Removing a voice in the dashboard does not reach config.json, so the saved
+    # default can name a voice the account no longer has. Synthesis then fails and
+    # drops to the robotic SAPI5 voice with nothing said about why - the one
+    # failure in this script a listener cannot diagnose by ear. Say it plainly
+    # here, where the evidence is already in hand.
+    if ($ElevenVoiceId -and -not ($all | Where-Object { $_.voice_id -eq $ElevenVoiceId })) {
+        Write-Output ''
+        Write-Output ("WARNING: the saved voice {0} is no longer on this account." -f $ElevenVoiceId)
+        Write-Output '         Speech will fall back to the Windows voice until you set one from the list above.'
+    }
+}
+
+# $candidates, not $matches: $Matches is an automatic variable PowerShell rewrites
+# on every -match, so a parameter of that name is a trap for whoever edits next.
+function Show-VoiceAmbiguity([string]$query, $candidates) {
+    Write-Output "'$query' matches more than one voice - name it more precisely, or use the id:"
+    Write-VoiceRows $candidates
+}
+
+function Set-DefaultVoice([string]$query) {
+    $resolved = Resolve-VoiceQuery $query
+    if ($resolved.Matches) { Show-VoiceAmbiguity $query $resolved.Matches; return }
+    if ($resolved.Error)   { Write-Output $resolved.Error; return }
+    # $picked for the same reason Invoke-VoicePreview uses it - see the note there.
+    $picked = $resolved.Voice
+
+    # Read-modify-write, never a fresh file: config.json belongs to the user and
+    # carries keys this function knows nothing about. Rewriting it wholesale
+    # would silently discard their model, speed and volume settings.
+    $cfg = $null
+    if (Test-Path -LiteralPath $configFile) {
+        try { $cfg = Get-Content -LiteralPath $configFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    }
+    if (-not $cfg) { $cfg = [pscustomobject]@{} }
+
+    if ($cfg.PSObject.Properties.Name -contains 'ElevenVoiceId') {
+        $cfg.ElevenVoiceId = $picked.voice_id
+    } else {
+        $cfg | Add-Member -NotePropertyName 'ElevenVoiceId' -NotePropertyValue $picked.voice_id
+    }
+
+    try {
+        # Not Set-Content -Encoding UTF8: on 5.1 that prepends a byte-order mark,
+        # and a BOM in front of a '{' is rejected by strict JSON parsers. This
+        # file is read by anything the user points at it, not only by this script.
+        [System.IO.File]::WriteAllText(
+            $configFile,
+            ($cfg | ConvertTo-Json -Depth 6),
+            (New-Object System.Text.UTF8Encoding $false)
+        )
+    } catch {
+        Write-Output "could not write $configFile - $($_.Exception.Message)"
+        return
+    }
+
+    # A deliberate choice should be heard on the very next utterance, so drop the
+    # randomiser's memory of what it last played rather than letting it skip this one.
+    Remove-Item -LiteralPath $lastVoiceFile -ErrorAction SilentlyContinue
+    Write-Output ('voice set to {0} [{1}]  {2}' -f $picked.name, $picked.category, $picked.voice_id)
+}
+
+function Invoke-VoicePreview([string]$query) {
+    $resolved = Resolve-VoiceQuery $query
+    if ($resolved.Matches) { Show-VoiceAmbiguity $query $resolved.Matches; return }
+    if ($resolved.Error)   { Write-Output $resolved.Error; return }
+
+    # $picked, never $voice. PowerShell looks variables up dynamically, through the
+    # call stack rather than the file, so a local named $voice here would be what
+    # Resolve-VoiceId sees when Invoke-Speech calls down into it - shadowing the
+    # $Voice parameter set on the line below with this whole object. Names are
+    # case-insensitive, so $voice and $Voice are one name and the clash is silent:
+    # every preview then played the default voice while printing the right one.
+    $picked = $resolved.Voice
+
+    # Said before speaking, not after: a preview is launched detached so the
+    # sample can be paused and stopped, and nothing written after this line is read.
+    Write-Output ('previewing {0} [{1}]  {2}' -f $picked.name, $picked.category, $picked.voice_id)
+
+    # -Voice is already the per-run override the speech path honours, so a
+    # preview is an ordinary utterance with it set. No second synthesis path.
+    $script:Voice = $picked.voice_id
+    Invoke-Speech ('This is {0}. Your agent will sound like this.' -f $picked.name) 'manual'
+}
+
 function Show-Diag {
     $key = Get-ElevenKey
     $voices = @()
@@ -766,6 +947,14 @@ function Get-SpeechStatus {
 
 try {
     if ($Diag) { Show-Diag; exit 0 }
+
+    # -- voice picker ---------------------------------------------------------
+    # Ahead of the transport controls because none of these act on a playback in
+    # flight: listing and setting speak nothing at all, and a preview starts a
+    # new utterance the same way -TextFile does.
+    if ($Voices)       { Show-Voices;                       exit 0 }
+    if ($SetVoice)     { Set-DefaultVoice $SetVoice;        exit 0 }
+    if ($PreviewVoice) { Invoke-VoicePreview $PreviewVoice; exit 0 }
 
     # -- transport controls ---------------------------------------------------
     # These act on a playback already in flight, so they run before anything that
