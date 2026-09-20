@@ -60,19 +60,55 @@ function isWindows() {
   return process.platform === 'win32';
 }
 
+/** Quote an argument for the command line the grandchild process will parse. */
+function childArg(value) {
+  const s = String(value);
+  return /\s/.test(s) ? '"' + s + '"' : s;
+}
+
+/** Quote a string for a PowerShell single-quoted literal. */
+function psLiteral(value) {
+  return "'" + String(value).replace(/'/g, "''") + "'";
+}
+
+/**
+ * Launch a player that must outlive this process.
+ *
+ * Node's own `detached: true` is not enough here. Agent hosts run hook commands
+ * inside a job object that kills every descendant when the command returns, and
+ * a Node-spawned child - detached or not - dies with it. PowerShell's
+ * `Start-Process` launches through the shell instead, which escapes the job;
+ * measured both ways, only this one survives.
+ *
+ * `Start-Process -ArgumentList` does no quoting of its own, so an argument
+ * containing a space arrives as two arguments and the child fails to bind its
+ * parameters - a silent death that looks exactly like "the feature is broken".
+ * Hence childArg().
+ */
+function runDetached(script, args, done) {
+  const full = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, ...args];
+  const argList = full.map((a) => psLiteral(childArg(a))).join(',');
+  const child = spawn(
+    'powershell',
+    ['-NoProfile', '-Command', `Start-Process -FilePath 'powershell' -ArgumentList ${argList} -WindowStyle Hidden`],
+    { stdio: 'ignore', windowsHide: true }
+  );
+  // Wait for the launcher, do not unref it. Exiting straight after spawn() lets
+  // the job object tear the launcher down before it has even started - it never
+  // reaches Start-Process, and nothing plays, with no error anywhere. Waiting
+  // costs about half a second and is the difference between working and not.
+  // The player it starts is a grandchild created through the shell, so it is
+  // free of the job and outlives everything here.
+  child.on('error', () => done && done());
+  child.on('close', () => done && done());
+}
+
 /** Run a PowerShell script, forwarding stdin, and exit with its code. */
 function runPowerShell(script, args, { pipeStdin = false, detached = false } = {}) {
   const full = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, ...args];
 
   if (detached) {
-    // Playback blocks for the length of the audio. A hook that waited for it
-    // would hold the turn open for minutes, so the player is let go of instead.
-    const child = spawn('powershell', full, {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    });
-    child.unref();
+    runDetached(script, args, () => process.exit(0));
     return;
   }
 

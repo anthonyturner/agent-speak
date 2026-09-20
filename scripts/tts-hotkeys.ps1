@@ -285,10 +285,14 @@ public class TtsHotkeys
 }
 '@
 
-Add-Type -TypeDefinition $source -ReferencedAssemblies 'System.Windows.Forms' -ErrorAction Stop
-
+# Claim the pid file BEFORE the compile below, not after. Add-Type takes about
+# five seconds to build the hook class, and a status check inside that window
+# used to answer 'not running' for a listener that was starting perfectly well -
+# which reads as a failure and invites a second listener to be started on top.
+# If the compile or the hook install fails, the finally clause clears it again.
 Set-Content -LiteralPath $selfPidFile -Value "$PID" -Encoding ascii
 try {
+    Add-Type -TypeDefinition $source -ReferencedAssemblies 'System.Windows.Forms' -ErrorAction Stop
     $traceFile = $null
     if ($Trace) { $traceFile = Join-Path $StateRoot 'hotkeys.log' }
     [TtsHotkeys]::Start($pidFile, $ctlFile, $seekFile, $StepMs, $traceFile)
