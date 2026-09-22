@@ -102,6 +102,46 @@ The cue keeps interrupting, and that is the point rather than an oversight: when
 the turn ends, narration still in flight is stale, and clearing the decks for the
 handover is the right call.
 
+### Mute is per session, and speaking is the default
+
+The unit is the session, because that is what a person means by "be quiet" — this
+window, not the four others that are working fine. It needed no new machinery:
+the session id is the transcript's file name, which is already how labels and cues
+are keyed, so a mute is a marker file named after it.
+
+Speaking is the default rather than opt-in. Opt-in never surprises you, but it
+fails the other way: a window you forgot to unmute is a window that finished an
+hour ago and never said so, and there is nothing to notice. A doorbell that
+sometimes does not ring is worse than one that occasionally rings when you would
+rather it did not.
+
+Two boundaries make it behave:
+
+- **Mute does not cover `/speak` or `/play`.** Those are someone asking out loud
+  to hear something. A flag set an hour ago in another context should not overrule
+  the sentence they just typed.
+- **A muted window still consumes its cue file.** Skipping the read instead would
+  bank them, and unmuting would empty an hour of stale handovers over the user —
+  the same failure the cue delete already exists to prevent, arriving later and
+  in bulk.
+
+### Cues queue, because windows were cutting each other off
+
+`Invoke-Speech` kills whatever is playing, regardless of which session queued it.
+With one window that is invisible. With four it means the window you are not
+looking at ends a turn and cuts off the sentence you were listening to, and no
+setting changes it, because it is not a setting.
+
+So cues go through the narration queue too, and queue entries carry the session
+that wrote them. A cue clears **its own** session's pending lines and then queues:
+within a window the handover still supersedes everything that window was in the
+middle of saying, which is what the cue is for, while another window's pending
+line is left alone because it is still its present tense.
+
+Notifications are the deliberate exception and still interrupt. A window raising
+one is blocked waiting for its user; making it queue behind another window's
+sentence is the one case where waiting your turn is the wrong behaviour.
+
 ### Media keys: a low-level hook, not `RegisterHotKey`
 
 Your keyboard's ⏯ ⏭ ⏮ keys drive playback — but only while speech is actually

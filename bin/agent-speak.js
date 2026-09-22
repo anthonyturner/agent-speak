@@ -389,6 +389,23 @@ function main() {
       break;
     }
 
+    // -- per-session quiet ---------------------------------------------------
+    // Keyed by session, because "be quiet" almost always means this window and
+    // not the four others that are working fine.
+    case 'mute':
+    case 'unmute':
+    case 'mute-status': {
+      const id = rest[0];
+      if (!id) {
+        console.error(`agent-speak ${command} <session_id>`);
+        process.exit(2);
+      }
+      const flag =
+        command === 'mute' ? '-Mute' : command === 'unmute' ? '-Unmute' : '-MuteStatus';
+      runPowerShell(SPEAK, [flag, '-SessionId', id]);
+      return;
+    }
+
     // -- transport -----------------------------------------------------------
     case 'stop':
     case 'pause':
@@ -451,7 +468,7 @@ function main() {
 
     default:
       console.log(
-        'agent-speak <say|play|speak|voice|stop|pause|resume|toggle|status|forward|rewind|hotkeys|diag>'
+        'agent-speak <say|play|speak|mute|unmute|mute-status|voice|stop|pause|resume|toggle|status|forward|rewind|hotkeys|diag>'
       );
       break;
   }
