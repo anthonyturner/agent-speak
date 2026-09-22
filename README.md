@@ -67,6 +67,45 @@ Then check it:
 the key and voice are configured, and how much quota is left. It never prints
 the key.
 
+## Talking while it works
+
+The cue is the end of the turn. Two things speak *during* one.
+
+**The agent narrates its own decisions.** At a point worth overhearing — picking
+between two approaches, changing course after finding something out — it says one
+line and carries on working:
+
+> "Going with CSS derivation rather than hand-tuned pixels."
+
+**Each subagent says when it's done.** Run anything that fans work out and you
+hear the shape of it going past:
+
+> "The engineer agent finished: wire the manifest window."
+
+These **queue**. Everything else here speaks by interrupting, which is right for a
+handover and wrong for a stream of short lines — you'd get the first syllable of
+each and the whole of none. Narration lines wait their turn and are spoken in
+order. The end-of-turn cue still interrupts them, on purpose: once the turn is
+over, a narration line is stale.
+
+Narration is billed like anything else, so it's capped and it's optional:
+
+```json
+{ "SpeakNarration": false }
+```
+
+### Why it doesn't just read the thinking aloud
+
+The obvious version of this feature — narrate the model's reasoning — isn't
+available to build. Extended thinking isn't persisted: every `thinking` block on
+disk is `{type, thinking: "", signature}`, with no text in it. The terminal draws
+it from the live stream and keeps nothing.
+
+So the reasoning is *authored* for the ear instead, by the agent, as it happens —
+the same contract as the cue. Which is the better artefact anyway: raw thinking
+read end to end would be exactly the unlistenable narration this plugin exists to
+avoid.
+
 ## Commands
 
 | Command | Does |
@@ -74,6 +113,12 @@ the key.
 | `/agent-speak:play` | read the last full response aloud |
 | `/agent-speak:tts pause` | pause, resume, stop, skip, or report status |
 | `/agent-speak:speak <text>` | speak a specific piece of text |
+
+And one the agent calls itself, mid-turn:
+
+```
+node <plugin>/bin/agent-speak.js say "the line" --session <session_id>
+```
 
 Bare phrases work too — "play the full response", "pause", "stop talking",
 "keep going" — no slash needed.
@@ -134,6 +179,8 @@ Everything lives in `~/.claude/agent-speak/`:
 | `speak-cues/`, `speak-labels/` | per-session copy |
 | `.tts.pid` | which process is playing |
 | `.tts.ctl`, `.tts.seek` | pause state and pending seek |
+| `queue/`, `.tts.drain.pid` | narration lines waiting, and who is speaking them |
+| `.spoken-agents/` | which subagent completions have been announced already |
 | `errors.log` | failures the script swallowed rather than break your turn |
 
 ## Porting

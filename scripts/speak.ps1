@@ -14,6 +14,7 @@
       -Mode notify     read a Notification-hook payload on stdin, speak the alert
       -Latest          speak the most recent assistant message, no stdin needed
       -TextFile <path> speak the contents of a file verbatim
+      -Queue -TextFile queue it to be spoken after whatever is already waiting
       -Diag            print the engine configuration and exit, speaking nothing
 
     Choosing a voice:
@@ -37,6 +38,11 @@ param(
     [string]$TextFile = '',
     [string]$Voice = '',
     [switch]$Latest,
+    # Narration: -Queue adds -TextFile to the back of the spoken queue instead of
+    # speaking it now, and starts a drainer if none is running. -Drain only starts
+    # the drainer, for a queue that was left behind by an interrupted one.
+    [switch]$Queue,
+    [switch]$Drain,
     [switch]$RandomVoice,
     [switch]$Print,
     [switch]$Diag,
@@ -82,6 +88,20 @@ $MaxCharsAuto   = 700        # hard cap for notification speech
 $MaxCharsManual = 6000       # hard cap for /speak - every character here is billed
 $MinChars       = 120        # summary mode: keep adding paragraphs until this is met
 $SpeakTables    = $true      # read table rows as "cell, cell, cell" instead of skipping them
+
+# -- narration ----------------------------------------------------------------
+# Lines spoken *during* a turn rather than at the end of it: a decision the agent
+# made, or a subagent reporting in. Set $SpeakNarration to $false to keep the
+# plugin to one utterance per turn, which is what it did before.
+$SpeakNarration     = $true
+$MaxCharsNarration  = 400    # per line - every character here is billed too
+# How many lines may be waiting to be spoken. Past this the OLDEST is dropped:
+# a listener who has fallen behind wants the current thought, not the stale one.
+$NarrationQueueMax  = 4
+# A drain lock whose owning process is gone is not a drain in progress, it is
+# wreckage - most likely the end-of-turn cue having killed the drainer mid-line.
+# Nothing may be spoken until it is cleared, so it is never simply trusted.
+$DrainLockStaleSec  = 300
 
 $Rate      = 1           # SAPI5 only: -10 (slow) .. 10 (fast)
 $Volume    = 90          # SAPI5 only: 0 .. 100
@@ -158,6 +178,12 @@ $SeekStepMs     = 10000
 $PollMs         = 120
 $voiceCacheFile = Join-Path $StateRoot '.tts-voices.json'
 $lastVoiceFile = Join-Path $StateRoot '.tts-lastvoice'
+# One file per line waiting to be spoken, named so that a plain sort is
+# chronological. Flat rather than per-session on purpose: there is one pair of
+# speakers, so there is one queue, and each line already carries its own session
+# label to say which window it came from.
+$QueueRoot = Join-Path $StateRoot 'queue'
+$drainLock = Join-Path $StateRoot '.tts.drain.pid'
 
 function Read-Payload {
     $raw = [Console]::In.ReadToEnd()
@@ -688,6 +714,126 @@ function Invoke-Speech([string]$text, [string]$Kind = 'auto') {
     }
 }
 
+# ------------------------------------------------------------- narration ----
+# Everything above speaks by interrupting: Invoke-Speech stops whatever is
+# playing before it starts. For one line at the end of a turn that is right - the
+# newest handover is the only one worth hearing.
+#
+# Narration is the opposite case. Several short lines arrive during a single turn
+# - a decision, then another, then three subagents reporting in - and interrupting
+# would mean hearing the first syllable of each and the whole of none. So these
+# lines queue, and one drainer at a time speaks them in order.
+#
+# The drainer is a plain process holding a lock file, not a service. It starts
+# when a line is queued, speaks until the queue is empty, and exits. Nothing has
+# to be running for narration to work, and nothing is left running once it stops.
+
+function Add-NarrationLine([string]$text) {
+    # Files are named by tick count, so sorting by name is sorting by age.
+    if (-not $text) { return }
+    if (-not (Test-Path -LiteralPath $QueueRoot)) {
+        New-Item -ItemType Directory -Force -Path $QueueRoot -ErrorAction SilentlyContinue | Out-Null
+    }
+    $name = '{0:D19}-{1}.txt' -f [DateTime]::UtcNow.Ticks, ([guid]::NewGuid().ToString('N').Substring(0, 8))
+    Set-Content -LiteralPath (Join-Path $QueueRoot $name) -Value $text -Encoding UTF8
+
+    # Trim from the front. A backlog means the listener is already behind, and
+    # the line they want is the one that just happened.
+    $waiting = @(Get-ChildItem -LiteralPath $QueueRoot -Filter *.txt -File -ErrorAction SilentlyContinue |
+                 Sort-Object Name)
+    if ($waiting.Count -gt $NarrationQueueMax) {
+        foreach ($old in $waiting[0..($waiting.Count - $NarrationQueueMax - 1)]) {
+            Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Clear-StaleDrainLock {
+    # A lock is only meaningful while its owner is alive. The end-of-turn cue
+    # kills whatever is speaking - by design - and if that is the drainer, the
+    # lock outlives it. Left alone, narration would be silent from then on.
+    if (-not (Test-Path -LiteralPath $drainLock)) { return }
+    $alive = $false
+    try {
+        $stamp = (Get-Content -LiteralPath $drainLock -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($stamp -match '^(\d+)\|(\d+)$') {
+            $p = Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue
+            if ($p -and $p.StartTime.Ticks -eq [long]$Matches[2]) { $alive = $true }
+        } else {
+            # Unreadable, or still being written. Age is the only evidence left.
+            $age = (Get-Date) - (Get-Item -LiteralPath $drainLock -ErrorAction SilentlyContinue).LastWriteTime
+            $alive = $age.TotalSeconds -lt $DrainLockStaleSec
+        }
+    } catch { $alive = $false }
+    if (-not $alive) { Remove-Item -LiteralPath $drainLock -Force -ErrorAction SilentlyContinue }
+}
+
+function Get-DrainLock {
+    # CreateNew is the whole point: it is atomic, so two processes queueing a line
+    # at the same instant cannot both decide they are the drainer. The loser does
+    # not wait or retry - the winner will find its line in the queue anyway.
+    Clear-StaleDrainLock
+    try {
+        $fs = [System.IO.File]::Open($drainLock, [System.IO.FileMode]::CreateNew,
+                                     [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+        $me = Get-Process -Id $PID
+        $bytes = [System.Text.Encoding]::ASCII.GetBytes("$PID|$($me.StartTime.Ticks)")
+        $fs.Write($bytes, 0, $bytes.Length)
+        $fs.Flush()
+        return $fs
+    } catch {
+        return $null
+    }
+}
+
+function Test-QueueEmpty {
+    $waiting = @(Get-ChildItem -LiteralPath $QueueRoot -Filter *.txt -File -ErrorAction SilentlyContinue)
+    return ($waiting.Count -eq 0)
+}
+
+function Invoke-Drain {
+    # The outer loop closes a lost wakeup. A line queued in the moment between the
+    # drainer seeing an empty queue and releasing its lock is a line nobody is
+    # coming back for: its own process already tried for the lock, failed, and
+    # exited. So the drainer re-checks after releasing, and takes the lock again
+    # if something arrived. Bounded, because this is a tie-break and not a loop
+    # the feature runs on.
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        if (-not (Invoke-DrainOnce)) { return }   # someone else has the queue
+        if (Test-QueueEmpty) { return }
+    }
+}
+
+function Invoke-DrainOnce {
+    # $false means the lock was not ours to take; $true means we drained and let go.
+    $lock = Get-DrainLock
+    if (-not $lock) { return $false }
+    try {
+        while ($true) {
+            # A reading the user explicitly asked for outranks narration. Stop
+            # rather than drop: the next queued line starts a fresh drainer.
+            $active = Get-ActiveSpeech
+            if ($active -and $active.Kind -eq 'manual') { break }
+
+            $next = @(Get-ChildItem -LiteralPath $QueueRoot -Filter *.txt -File -ErrorAction SilentlyContinue |
+                      Sort-Object Name | Select-Object -First 1)
+            if (-not $next -or $next.Count -eq 0) { break }
+
+            $text = ''
+            try { $text = Get-Content -LiteralPath $next[0].FullName -Raw -Encoding UTF8 } catch { }
+            # Deleted before it is spoken, never after. A line that kills the
+            # synthesizer would otherwise be retried forever by every drainer that
+            # followed; losing one narration line is the cheaper failure.
+            Remove-Item -LiteralPath $next[0].FullName -Force -ErrorAction SilentlyContinue
+            if ($text -and $text.Trim()) { Invoke-Speech $text.Trim() 'narration' }
+        }
+    } finally {
+        try { $lock.Close() } catch { }
+        Remove-Item -LiteralPath $drainLock -Force -ErrorAction SilentlyContinue
+    }
+    return $true
+}
+
 function Invoke-ElevenApi([string]$key, [string]$path) {
     # returns the status code and raw body, so a diagnostic can tell a bad key
     # apart from a key that simply lacks one permission
@@ -995,6 +1141,25 @@ try {
         }
         Set-ControlState $want
         if ($want -eq 'pause') { Write-Output 'paused' } else { Write-Output 'resumed' }
+        exit 0
+    }
+
+    # -- narration ------------------------------------------------------------
+    # Queueing runs before the speaking paths below because it must return fast:
+    # the agent is mid-turn and waiting on this command, so it enqueues, hands the
+    # queue to a drainer and gets out. -Print still shows the line and speaks
+    # nothing, which is how a narration hook is debugged in a quiet room.
+    if ($Queue -or $Drain) {
+        if (-not $SpeakNarration) { exit 0 }
+        if ($Queue -and $TextFile) {
+            $raw = Get-Content -LiteralPath $TextFile -Raw -Encoding UTF8
+            $line = Convert-ToSpeech $raw -Light
+            if ($line.Length -gt $MaxCharsNarration) { $line = $line.Substring(0, $MaxCharsNarration) }
+            $line = Add-SessionLabel (Get-SessionLabel '') $line
+            if ($Print) { Write-Output $line; exit 0 }
+            Add-NarrationLine $line
+        }
+        Invoke-Drain
         exit 0
     }
 
