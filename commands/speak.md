@@ -28,6 +28,19 @@ The session label is the one addition, and the script prepends it rather than
 editing the text - so do not paste the label into the text as well, or it is
 said twice.
 
+## Narrating mid-turn
+
+This command speaks *now*, interrupting whatever is playing. To say something
+while you are still working — a decision worth overhearing — use `say` instead,
+which queues behind anything already waiting:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/bin/agent-speak.js" say "the line" --session <session_id>
+```
+
+One sentence on the decision and why it went that way. Not a running commentary:
+a few in a long turn, none in a short one.
+
 ## The cue, which matters more than this command
 
 Most of what this plugin says is not `/speak`. At the end of every turn the user

@@ -29,6 +29,8 @@ const PLUGIN_ROOT = path.resolve(__dirname, '..');
 const SPEAK = path.join(PLUGIN_ROOT, 'scripts', 'speak.ps1');
 const HOTKEYS = path.join(PLUGIN_ROOT, 'scripts', 'tts-hotkeys.ps1');
 const STATE_DIR = path.join(os.homedir(), '.claude', 'agent-speak');
+/** Which subagent completions have already been spoken, per session. */
+const ANNOUNCED_DIR = path.join(STATE_DIR, '.spoken-agents');
 
 /** What a Claude Code session is told at the start, so cues get written at all. */
 const SESSION_BRIEF = `<agent-speak>
@@ -50,6 +52,17 @@ issue number and title, or the repository and task - to:
   ${path.join(STATE_DIR, 'speak-labels', '<session_id>.txt')}
 It is spoken before the cue, so the user can tell which window is talking.
 Keep it short, and rewrite it if the session moves on to something else.
+
+You may also speak DURING a turn, at a decision point the user would want to
+overhear - choosing between two approaches, changing course after finding
+something out, or handing work to a subagent:
+  node "<plugin>/bin/agent-speak.js" say "the line" --session <session_id>
+
+Say the decision and why it went that way, in one sentence: "Going with CSS
+derivation rather than hand-tuned pixels." Not what you are about to type, not
+what you just typed, and never a running commentary - a few lines in a long
+turn, none in a short one. These queue and are spoken in order, so they do not
+cut each other off, and the end-of-turn cue still closes the turn.
 
 The user can say "play the full response" to hear the whole answer, and
 "pause", "resume" or "stop" to control playback. Treat those bare phrases as
@@ -128,6 +141,160 @@ function runPowerShell(script, args, { pipeStdin = false, detached = false } = {
   child.on('close', (code) => process.exit(code === null ? 0 : code));
 }
 
+/**
+ * Park a line of text somewhere the detached player can still read it.
+ *
+ * It cannot be deleted after the spawn: the player is a grandchild that has not
+ * necessarily started yet, so removing the file is a race it usually loses. They
+ * are swept on the next call instead - a few hundred bytes each, and the sweep
+ * costs one directory listing.
+ */
+function writeTempText(text) {
+  const dir = path.join(STATE_DIR, 'tmp');
+  fs.mkdirSync(dir, { recursive: true });
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      const p = path.join(dir, name);
+      try {
+        if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
+      } catch {
+        /* another process got there first, which is the outcome we wanted */
+      }
+    }
+  } catch {
+    /* a failed sweep must not stop the line being spoken */
+  }
+  const file = path.join(dir, `say-${Date.now()}-${process.pid}.txt`);
+  fs.writeFileSync(file, text, 'utf8');
+  return file;
+}
+
+/** Pull `--session <id>` out of an argument list, returning [id, remaining]. */
+function takeSession(args) {
+  const i = args.indexOf('--session');
+  if (i === -1 || !args[i + 1]) return ['', args];
+  return [args[i + 1], args.slice(0, i).concat(args.slice(i + 2))];
+}
+
+function readStdin(done) {
+  let raw = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (c) => (raw += c));
+  process.stdin.on('end', () => {
+    try {
+      done(JSON.parse(raw));
+    } catch {
+      done(null);
+    }
+  });
+  process.stdin.on('error', () => done(null));
+}
+
+/** 'general-purpose' is what the tool calls it; nobody says that out loud. */
+function spokenAgentName(type) {
+  const t = String(type || '').trim();
+  if (!t || t === 'general-purpose' || t === 'claude') return 'helper';
+  return t.replace(/-/g, ' ').toLowerCase();
+}
+
+/**
+ * Which subagent just finished, and what it was asked to do.
+ *
+ * SubagentStop says only that *a* subagent ended; it carries nothing about which
+ * one. The subagent's own conversation is no help either - it is not persisted
+ * anywhere on disk. What is persisted, in the parent's transcript, is the `Agent`
+ * tool_use that started it, carrying the agent type and a one-line description
+ * written for a human to read. That is the announcement.
+ *
+ * Matching the right call matters once a fan-out is running. Completions do not
+ * arrive in spawn order, so the finished one is taken to be the oldest unspoken
+ * call whose tool_result has already landed; if none has, the oldest unspoken
+ * call is the better guess than silence.
+ */
+function subagentAnnouncement(payload) {
+  const transcript = payload && payload.transcript_path;
+  if (!transcript || !fs.existsSync(transcript)) return null;
+
+  const sessionId =
+    (payload && payload.session_id) || path.basename(transcript, '.jsonl');
+
+  const calls = [];
+  const settled = new Set();
+  let lines;
+  try {
+    lines = fs.readFileSync(transcript, 'utf8').split(/\r?\n/);
+  } catch {
+    return null;
+  }
+  // The tail is enough: an announcement more than a few hundred entries old is
+  // one this hook already made, or one nobody is still waiting to hear.
+  for (const line of lines.slice(-800)) {
+    if (!line) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const content = entry && entry.message && entry.message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block.type === 'tool_use' && (block.name === 'Agent' || block.name === 'Task')) {
+        calls.push({
+          id: block.id,
+          type: (block.input && block.input.subagent_type) || '',
+          description: (block.input && block.input.description) || '',
+        });
+      } else if (block.type === 'tool_result' && block.tool_use_id) {
+        settled.add(block.tool_use_id);
+      }
+    }
+  }
+  if (!calls.length) return null;
+
+  const stateFile = path.join(ANNOUNCED_DIR, `${sessionId}.json`);
+  let announced = [];
+  try {
+    announced = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    if (!Array.isArray(announced)) announced = [];
+  } catch {
+    /* no state yet, or unreadable - either way nothing has been announced */
+  }
+
+  const pending = calls.filter((c) => c.id && !announced.includes(c.id));
+  if (!pending.length) return null;
+  const done = pending.find((c) => settled.has(c.id)) || pending[0];
+
+  announced.push(done.id);
+  try {
+    fs.mkdirSync(ANNOUNCED_DIR, { recursive: true });
+    // Bounded, because a long session spawns a lot of agents and this is only
+    // ever asked "have I said this one".
+    fs.writeFileSync(stateFile, JSON.stringify(announced.slice(-50)), 'utf8');
+  } catch {
+    // Unwritable state means the line may be repeated later. Saying it twice is
+    // a smaller failure than never saying it, so carry on.
+  }
+
+  const what = String(done.description || '').trim().replace(/[.\s]+$/, '');
+  return what
+    ? `The ${spokenAgentName(done.type)} agent finished: ${what}.`
+    : `The ${spokenAgentName(done.type)} agent finished.`;
+}
+
+/** Queue one line, and hand the queue to a drainer if none is running. */
+function queueLine(text, sessionId, print) {
+  const file = writeTempText(text);
+  const args = ['-Queue', '-TextFile', file];
+  if (sessionId) args.push('-SessionId', sessionId);
+  if (print) {
+    runPowerShell(SPEAK, [...args, '-Print']);
+    return;
+  }
+  runPowerShell(SPEAK, args, { detached: true });
+}
+
 function main() {
   const [command, ...rest] = process.argv.slice(2);
 
@@ -171,6 +338,32 @@ function main() {
         pipeStdin: true,
       });
       return;
+
+    case 'subagent-stop':
+      readStdin((payload) => {
+        const line = subagentAnnouncement(payload);
+        // Nothing to say is the normal case for a subagent whose start was never
+        // recorded. Say nothing, succeed, and do not guess.
+        if (!line) process.exit(0);
+        queueLine(line, (payload && payload.session_id) || '', rest.includes('--print'));
+      });
+      return;
+
+    // -- narration -----------------------------------------------------------
+    // Spoken during a turn, not at the end of one. Queued rather than spoken
+    // outright: the agent may narrate twice in a row, and the second line must
+    // not cut off the first.
+    case 'say': {
+      const [sessionId, words] = takeSession(rest.filter((a) => a !== '--print'));
+      const text = words.join(' ').trim();
+      if (!text) {
+        console.error('agent-speak say "<text>" [--session <id>]');
+        process.exit(2);
+      }
+      queueLine(text, sessionId, rest.includes('--print'));
+      if (!rest.includes('--print')) console.log('queued');
+      break;
+    }
 
     // -- playback ------------------------------------------------------------
     case 'play': {
@@ -258,7 +451,7 @@ function main() {
 
     default:
       console.log(
-        'agent-speak <play|speak|voice|stop|pause|resume|toggle|status|forward|rewind|hotkeys|diag>'
+        'agent-speak <say|play|speak|voice|stop|pause|resume|toggle|status|forward|rewind|hotkeys|diag>'
       );
       break;
   }

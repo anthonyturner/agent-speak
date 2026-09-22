@@ -36,6 +36,72 @@ would replay the *previous* turn's line — confidently announcing work that
 already finished. A stale cue is worse than no cue, so a missing one falls back
 to a generic "Response ready." That failure is honest; the other is a lie.
 
+### Narration is authored, because thinking cannot be read
+
+The obvious way to speak an agent's reasoning is to read its thinking aloud. It
+is not possible, and the reason is worth writing down so nobody tries again.
+
+Extended thinking is not persisted. It appears in the transcript as a block, but
+the block is `{type, thinking: "", signature}` — across the eight most recent
+transcripts of one project, all **407** of them carried no text at all. The
+terminal renders thinking from the live stream and keeps none of it, so there is
+nothing on disk for a hook to read.
+
+Nor would it be worth reading. Raw reasoning is a working note: it backtracks, it
+lists options it discards, it is written to nobody. Narrated end to end it is the
+same failure as narrating the response, which is the thing this plugin exists to
+avoid.
+
+So narration follows the cue's contract instead — **the agent writes the line,
+the hook speaks it** — moved from the end of the turn to the middle of it. The
+`SessionStart` brief authorises it at decision points and steers hard away from a
+running commentary, because the failure mode here is not silence, it is a voice
+that will not stop.
+
+### A subagent is identified by its `Agent` call, not by its own transcript
+
+`SubagentStop` says that *a* subagent finished. It does not say which, and the
+subagent's own conversation is not persisted either: 195 `Agent` tool_use blocks
+across this machine's transcripts, and not one entry flagged `isSidechain`.
+
+What *is* on disk, in the parent's transcript, is the call that started it —
+carrying `subagent_type` and a `description` already written for a human to read.
+That is the announcement, and it costs nothing to produce.
+
+Matching the right call is the part that needed thought, because a fan-out does
+not finish in spawn order. The finished agent is taken to be the oldest
+un-announced call whose `tool_result` has landed; announced ids are kept per
+session so nothing is said twice. When no result has landed yet, the oldest
+un-announced call is a better guess than saying nothing — being a beat early
+about which of your own agents returned is a small error, and silence is not.
+
+### Narration queues; the cue still interrupts
+
+`Invoke-Speech` stops whatever is playing before it starts. That is right for one
+line at the end of a turn: the newest handover is the only one worth hearing.
+
+It is wrong for narration, which arrives in bursts — a decision, another, then
+three subagents reporting in. Interrupting would mean hearing the first syllable
+of each and the whole of none. So narration goes through a queue drained by one
+process at a time, holding a lock file taken with `CreateNew` because that is
+atomic and two simultaneous lines must not both decide they are the drainer.
+
+Three details are load-bearing:
+
+- **The drainer re-checks after releasing the lock.** A line queued in the moment
+  between "queue is empty" and "lock released" is one nobody is coming back for:
+  its own process already tried for the lock, failed and exited. Without the
+  re-check that line waits for an unrelated future line to wake it.
+- **A stale lock is never trusted.** The end-of-turn cue kills whatever is
+  speaking — by design — and if that is the drainer, the lock outlives it. Left
+  alone, narration would go silent from then on and stay silent.
+- **The queue is trimmed from the front.** A backlog means the listener is
+  already behind, and what they want is the thought that just happened.
+
+The cue keeps interrupting, and that is the point rather than an oversight: when
+the turn ends, narration still in flight is stale, and clearing the decks for the
+handover is the right call.
+
 ### Media keys: a low-level hook, not `RegisterHotKey`
 
 Your keyboard's ⏯ ⏭ ⏮ keys drive playback — but only while speech is actually
