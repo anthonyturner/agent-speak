@@ -142,6 +142,44 @@ Notifications are the deliberate exception and still interrupt. A window raising
 one is blocked waiting for its user; making it queue behind another window's
 sentence is the one case where waiting your turn is the wrong behaviour.
 
+### The microphone gate is a list of apps, not a microphone check
+
+Speech holds while you are dictating, because being talked over mid-sentence by a
+different agent is the one interruption you cannot escape: reaching for pause
+means stopping dictating.
+
+Detection needed no audio work at all. Windows keeps a consent store per capturing
+app under `CapabilityAccessManager\ConsentStore\microphone`, and
+`LastUsedTimeStop == 0` means that app is capturing *right now*. Two registry
+reads, no WASAPI interop, nothing to keep running.
+
+The filter is the part that matters, and it was nearly the bug. Asked "is the
+microphone in use", that same store answers **yes, permanently**, on any machine
+running OBS, a virtual camera, or a conferencing app left open — OBS reads
+`IN-USE` on the machine this was built on. A gate on that would have meant speech
+never playing again, presenting as a broken plugin rather than a wrong setting. So
+the gate is a list of apps that count as *you talking*, defaulting to Wispr Flow
+alone, and anything else holding the microphone is ignored.
+
+Matching is a substring of the registered path, never the whole path: it carries a
+version number, and six WisprFlow versions were already in the store.
+
+Three smaller decisions:
+
+- **A settle delay after the microphone closes.** Dictation ends the moment you
+  stop speaking, but you are then reading the transcription back and editing it.
+  Speaking into that gap is still interrupting you.
+- **The wait is bounded**, and the line is spoken anyway at the cap. A microphone
+  held open forever should produce a late line, not silence with nothing to
+  diagnose. The caps sit under the hooks' own timeouts.
+- **The wait is per queued line, not once per drain.** A backlog takes a while to
+  get through and you may start dictating in the middle of it. The line is already
+  out of the queue by then, so waiting holds it rather than dropping it.
+
+`diag` prints both halves — what would hold speech, and what is holding it right
+now — because "why has it gone quiet" is the question this feature invites, and
+guessing at it is miserable.
+
 ### Media keys: a low-level hook, not `RegisterHotKey`
 
 Your keyboard's ⏯ ⏭ ⏮ keys drive playback — but only while speech is actually

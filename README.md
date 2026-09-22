@@ -126,6 +126,41 @@ The exception is notifications, which still interrupt on purpose: a window
 notifying you is blocked waiting for you, and making that queue behind another
 window's sentence is the one case where being polite is wrong.
 
+## It waits while you're talking
+
+Dictating to one agent while another starts talking is the worst case here — you
+can't reach for pause without stopping dictating, and what you're saying lands in
+the transcript on top of what it's saying back.
+
+So automatic speech holds while your microphone is live, and carries on when you
+release it, after a short settle — you're usually still reading the transcription
+back when the mic closes.
+
+```json
+{ "MicHoldApps": ["WisprFlow"] }
+```
+
+**It's a list of apps, not "is the microphone in use", and that matters.** Windows
+reports OBS, virtual-camera software and conferencing apps as holding the
+microphone for as long as they're open. Gate on the microphone in general and the
+machine never speaks again — which looks like a broken plugin, not a wrong
+setting. Only the apps named here count as *you talking*. Add `Discord`, `Zoom` or
+`ms-teams` to hold speech during calls too.
+
+The wait is capped (`MicWaitMaxSec`, 90s). Something holding the mic forever should
+mean a late line, not silence with no explanation.
+
+`/speak` and `/play` aren't gated — you asked for those out loud.
+
+When it won't talk and you want to know why:
+
+```
+node <plugin>/bin/agent-speak.js diag
+
+Holds for mic      : WisprFlow
+Microphone now     : HOLDING - C:\...\WisprFlow\app-1.6.897\Wispr Flow.exe
+```
+
 ### Why it doesn't just read the thinking aloud
 
 The obvious version of this feature — narrate the model's reasoning — isn't

@@ -29,5 +29,11 @@
   "_narration": "Lines spoken during a turn: decisions the agent narrates, and one line per subagent that finishes. Set SpeakNarration to false for one utterance per turn, as before. These are billed like any other characters, so the queue is capped and the oldest waiting line is dropped first.",
   "SpeakNarration": true,
   "MaxCharsNarration": 400,
-  "NarrationQueueMax": 4
+  "NarrationQueueMax": 4,
+
+  "_microphone": "Automatic speech waits while you are dictating. MicHoldApps is matched as a substring of the capturing app's path, so it survives version bumps - and it is a list rather than 'any microphone use' on purpose: Windows reports OBS, virtual cameras and conferencing apps as holding the microphone for as long as they are open, and gating on that would mean the machine never speaks again. Add Discord, Zoom or ms-teams to hold speech during calls too. The wait is capped so a microphone held open forever is a late line, not silence.",
+  "HoldForMic": true,
+  "MicHoldApps": ["WisprFlow"],
+  "MicSettleMs": 1200,
+  "MicWaitMaxSec": 90
 }

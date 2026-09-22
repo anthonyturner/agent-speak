@@ -103,6 +103,32 @@ $MaxCharsNarration  = 400    # per line - every character here is billed too
 # How many lines may be waiting to be spoken. Past this the OLDEST is dropped:
 # a listener who has fallen behind wants the current thought, not the stale one.
 $NarrationQueueMax  = 4
+# -- microphone ---------------------------------------------------------------
+# Dictating to one agent while another starts talking is the worst case this tool
+# has: you cannot pause it without stopping dictating. So automatic speech waits
+# while you are talking.
+#
+# $MicHoldApps is the whole feature, and the reason this is not simply "is the
+# microphone in use". Windows reports OBS, virtual-camera software and conferencing
+# apps as holding the microphone for as long as they are open - gate on that and
+# the machine never speaks again, which looks like a broken plugin rather than a
+# wrong setting. Only these apps count as *you talking*. Add 'Discord', 'Zoom' or
+# 'ms-teams' to hold speech during calls too.
+#
+# Matched as a substring of the registered executable path, never exactly: the path
+# carries a version number that changes on every update.
+$HoldForMic      = $true
+$MicHoldApps     = @('WisprFlow')
+# You stop speaking, but then you read the transcription back and edit it before
+# you send. Speaking into that gap is still interrupting you.
+$MicSettleMs     = 1200
+# Bounded, so a microphone held open forever is a late line and not silence with
+# no explanation. Kept under the Stop hook's own 180s timeout, with room for the
+# utterance afterwards; the notification cap is under its 60s one.
+$MicWaitMaxSec   = 90
+$MicWaitNotifySec = 30
+$MicPollMs       = 400
+
 # A drain lock whose owning process is gone is not a drain in progress, it is
 # wreckage - most likely the end-of-turn cue having killed the drainer mid-line.
 # Nothing may be spoken until it is cleared, so it is never simply trusted.
@@ -745,6 +771,56 @@ function Invoke-Speech([string]$text, [string]$Kind = 'auto') {
 # when a line is queued, speaks until the queue is empty, and exits. Nothing has
 # to be running for narration to work, and nothing is left running once it stops.
 
+# ------------------------------------------------------------- microphone ---
+# Windows keeps a consent store per capturing app, and LastUsedTimeStop == 0 means
+# that app is capturing right now. That is the entire detection: two registry
+# reads, no WASAPI interop, no audio device polling, and nothing to keep running.
+
+function Get-MicHolder {
+    # The registered path of an app from $MicHoldApps that is capturing right now,
+    # or '' if none is. Returns the name rather than a boolean so `diag` can say
+    # *what* is holding it - "why has it gone quiet" needs a real answer.
+    if (-not $HoldForMic) { return '' }
+    $patterns = @($MicHoldApps | Where-Object { $_ })
+    if (-not $patterns.Count) { return '' }
+    $roots = @(
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone'
+    )
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        foreach ($key in @(Get-ChildItem -LiteralPath $root -Recurse -ErrorAction SilentlyContinue)) {
+            $props = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
+            # No LastUsedTimeStart means this key is a container, not an app.
+            if ($null -eq $props.LastUsedTimeStart) { continue }
+            if ($props.LastUsedTimeStop -ne 0) { continue }
+            foreach ($pattern in $patterns) {
+                if ($key.PSChildName -like "*$pattern*") { return $key.PSChildName }
+            }
+        }
+    }
+    return ''
+}
+
+function Wait-ForMic([int]$maxSec = 0) {
+    # Returns having waited out the microphone, or having given up on it.
+    if (-not $HoldForMic) { return }
+    if ($maxSec -le 0) { $maxSec = $MicWaitMaxSec }
+    $deadline = (Get-Date).AddSeconds($maxSec)
+    while ((Get-Date) -lt $deadline) {
+        # Free at the first look is the normal case, and it must cost nothing -
+        # no settle delay on a turn where nobody was talking.
+        if (-not (Get-MicHolder)) { return }
+        while ((Get-MicHolder) -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds $MicPollMs
+        }
+        Start-Sleep -Milliseconds $MicSettleMs
+        # Re-checked after settling, because the usual reason a settle ends is
+        # that you have started saying the next thing.
+        if (-not (Get-MicHolder)) { return }
+    }
+}
+
 function Add-NarrationLine([string]$text, [string]$owner = '') {
     # Files are named by tick count, so sorting by name is sorting by age. The
     # session is in the name too, because a cue has to be able to clear its own
@@ -857,7 +933,14 @@ function Invoke-DrainOnce {
             # synthesizer would otherwise be retried forever by every drainer that
             # followed; losing one narration line is the cheaper failure.
             Remove-Item -LiteralPath $next[0].FullName -Force -ErrorAction SilentlyContinue
-            if ($text -and $text.Trim()) { Invoke-Speech $text.Trim() 'narration' }
+            if ($text -and $text.Trim()) {
+                # Waited for per line, not once per drain: a queue can take a while
+                # to get through, and you may well start dictating in the middle
+                # of it. The line is already out of the queue, so waiting holds it
+                # rather than dropping it.
+                Wait-ForMic
+                Invoke-Speech $text.Trim() 'narration'
+            }
         }
     } finally {
         try { $lock.Close() } catch { }
@@ -1060,6 +1143,17 @@ function Show-Diag {
     Write-Output "Model / format     : $ElevenModel / $ElevenFormat"
     Write-Output "Engine in use      : $(if ($ready) { 'ElevenLabs, with SAPI5 on any failure' } else { 'SAPI5 - ElevenLabs not configured' })"
     Write-Output "SAPI5 voices       : $($voices -join ', ')"
+
+    # "Why has it gone quiet" is the question this feature invites, and guessing
+    # at it is miserable. Both answers are printed: what would hold speech, and
+    # what is holding it right now.
+    if ($HoldForMic) {
+        $holder = Get-MicHolder
+        Write-Output "Holds for mic      : $($MicHoldApps -join ', ')"
+        Write-Output "Microphone now     : $(if ($holder) { "HOLDING - $($holder -replace '#', '\')" } else { 'clear' })"
+    } else {
+        Write-Output "Holds for mic      : off"
+    }
     if (-not $ready) { return }
 
     # /v1/voices needs only the Voices read permission, so it is the honest test
@@ -1249,9 +1343,14 @@ try {
         $transcript = ''
         if ($payload) { $transcript = [string]$payload.transcript_path }
         if (Test-SessionMuted $transcript) { exit 0 }
-        # Still interrupts, unlike the cue. A notification means the window is
-        # blocked waiting for its user, and making that wait behind another
-        # window's sentence is the one case where being polite is the wrong call.
+        # Still interrupts other speech, unlike the cue. A notification means the
+        # window is blocked waiting for its user, and making that wait behind
+        # another window's sentence is the one case where being polite is wrong.
+        #
+        # It does still wait for the microphone, on a shorter leash than the cue -
+        # interrupting speech is one thing, interrupting the person is another, and
+        # this hook's own timeout is 60s.
+        Wait-ForMic $MicWaitNotifySec
         Invoke-Speech (Add-SessionLabel (Get-SessionLabel $transcript) (Convert-ToSpeech $msg)) 'auto'
     }
     else {
