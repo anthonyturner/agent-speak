@@ -1,6 +1,6 @@
 ---
-description: Stop, pause, resume or check the speech playing right now
-argument-hint: "stop | pause | resume | toggle | status"
+description: Stop, pause, resume, mute this window, or check the speech playing right now
+argument-hint: "stop | pause | resume | toggle | status | mute | unmute"
 allowed-tools: Bash(node:*)
 ---
 
@@ -28,6 +28,32 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/agent-speak.js" <subcommand>
 
 Report what it actually printed, not what you expected. If it says nothing was
 playing, say that.
+
+## Muting this window
+
+`stop` silences the sentence playing now. **`mute` silences this window** until it
+is unmuted - every cue, every narration line, every notification it would have
+said on its own. Other windows keep talking.
+
+These take the session id, which is the name of this session's transcript file
+under `~/.claude/projects/<project>/`:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/bin/agent-speak.js" <mute|unmute|mute-status> <session_id>
+```
+
+| Said | Subcommand | The script prints |
+| --- | --- | --- |
+| `mute`, `be quiet in this window`, `stop speaking here`, `silence this tab` | `mute` | `muted` |
+| `unmute`, `you can talk again`, `speak here again` | `unmute` | `speaking` |
+| `am I muted`, `is this window quiet` | `mute-status` | `muted` / `speaking` |
+
+`/agent-speak:speak` and `/agent-speak:play` **still work while muted** - asking
+out loud to hear something is not overruled by a flag set earlier. Mute only
+covers what the plugin says uninvited.
+
+Nothing is banked while muted. Cues are consumed and discarded as they arrive, so
+unmuting does not empty an hour of handovers over the user.
 
 **Treat the bare words as this command even without the slash.** "Stop talking",
 "pause that", "shut up", "keep going" are this command, not an invitation to

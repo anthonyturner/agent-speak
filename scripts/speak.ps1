@@ -43,6 +43,11 @@ param(
     # the drainer, for a queue that was left behind by an interrupted one.
     [switch]$Queue,
     [switch]$Drain,
+    # Per-session quiet, keyed by -SessionId. Mute silences what this window says
+    # uninvited; it never silences -TextFile or -Latest.
+    [switch]$Mute,
+    [switch]$Unmute,
+    [switch]$MuteStatus,
     [switch]$RandomVoice,
     [switch]$Print,
     [switch]$Diag,
@@ -219,15 +224,31 @@ if (Test-Path -LiteralPath $configFile) {
 # and it means a label written once at the start of a session keeps working for
 # the rest of it. No label file just means no preamble, exactly as before.
 $LabelRoot = Join-Path $StateRoot 'speak-labels'
+# A window that has asked for quiet. Present means this session says nothing on
+# its own initiative; see Test-SessionMuted.
+$MuteRoot = Join-Path $StateRoot 'speak-mute'
+
+function Get-SessionIdFor([string]$transcript) {
+    # -SessionId when the caller knows it, otherwise the transcript's file name,
+    # which is the session id and the reason none of this needs a registry.
+    if ($SessionId) { return $SessionId }
+    if (-not $transcript) { return '' }
+    return [System.IO.Path]::GetFileNameWithoutExtension($transcript)
+}
+
+function Test-SessionMuted([string]$transcript) {
+    # Deliberately consulted only by the paths that speak uninvited. /speak and
+    # /play are the user asking out loud for something; a flag they set an hour
+    # ago in another context should not overrule the sentence they just typed.
+    $id = Get-SessionIdFor $transcript
+    if (-not $id) { return $false }
+    return (Test-Path -LiteralPath (Join-Path $MuteRoot "$id.txt"))
+}
 
 function Get-SessionLabel([string]$transcript) {
     # an explicit -Preamble always wins, so /speak can label a one-off
     if ($Preamble) { return $Preamble.Trim() }
-    $id = $SessionId
-    if (-not $id) {
-        if (-not $transcript) { return '' }
-        $id = [System.IO.Path]::GetFileNameWithoutExtension($transcript)
-    }
+    $id = Get-SessionIdFor $transcript
     if (-not $id) { return '' }
     $file = Join-Path $LabelRoot "$id.txt"
     if (-not (Test-Path -LiteralPath $file)) { return '' }
@@ -264,11 +285,7 @@ function Add-SessionLabel([string]$label, [string]$text) {
 $CueRoot = Join-Path $StateRoot 'speak-cues'
 
 function Get-SessionCue([string]$transcript) {
-    $id = $SessionId
-    if (-not $id) {
-        if (-not $transcript) { return '' }
-        $id = [System.IO.Path]::GetFileNameWithoutExtension($transcript)
-    }
+    $id = Get-SessionIdFor $transcript
     if (-not $id) { return '' }
     $file = Join-Path $CueRoot "$id.txt"
     if (-not (Test-Path -LiteralPath $file)) { return '' }
@@ -728,13 +745,17 @@ function Invoke-Speech([string]$text, [string]$Kind = 'auto') {
 # when a line is queued, speaks until the queue is empty, and exits. Nothing has
 # to be running for narration to work, and nothing is left running once it stops.
 
-function Add-NarrationLine([string]$text) {
-    # Files are named by tick count, so sorting by name is sorting by age.
+function Add-NarrationLine([string]$text, [string]$owner = '') {
+    # Files are named by tick count, so sorting by name is sorting by age. The
+    # session is in the name too, because a cue has to be able to clear its own
+    # window's backlog without touching what another window is waiting to say.
     if (-not $text) { return }
     if (-not (Test-Path -LiteralPath $QueueRoot)) {
         New-Item -ItemType Directory -Force -Path $QueueRoot -ErrorAction SilentlyContinue | Out-Null
     }
-    $name = '{0:D19}-{1}.txt' -f [DateTime]::UtcNow.Ticks, ([guid]::NewGuid().ToString('N').Substring(0, 8))
+    if (-not $owner) { $owner = 'anon' }
+    $name = '{0:D19}__{1}__{2}.txt' -f [DateTime]::UtcNow.Ticks, $owner,
+                                       ([guid]::NewGuid().ToString('N').Substring(0, 8))
     Set-Content -LiteralPath (Join-Path $QueueRoot $name) -Value $text -Encoding UTF8
 
     # Trim from the front. A backlog means the listener is already behind, and
@@ -745,6 +766,17 @@ function Add-NarrationLine([string]$text) {
         foreach ($old in $waiting[0..($waiting.Count - $NarrationQueueMax - 1)]) {
             Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
         }
+    }
+}
+
+function Clear-SessionNarration([string]$owner) {
+    # What a window queued before its turn ended. Once the handover is ready those
+    # lines are history - "I am about to try X" is not worth hearing after X is
+    # finished - so the cue drops them. Only this window's: another tab's pending
+    # line is still its present tense.
+    if (-not $owner) { return }
+    foreach ($f in @(Get-ChildItem -LiteralPath $QueueRoot -Filter "*__${owner}__*.txt" -File -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -1107,6 +1139,33 @@ try {
     # reads stdin or a transcript and they never speak anything themselves.
     if ($Status) { Write-Output (Get-SpeechStatus); exit 0 }
 
+    # -- per-session quiet ----------------------------------------------------
+    if ($Mute -or $Unmute -or $MuteStatus) {
+        $id = Get-SessionIdFor ''
+        if (-not $id) { Write-Output 'no session'; exit 0 }
+        $marker = Join-Path $MuteRoot "$id.txt"
+        if ($MuteStatus) {
+            Write-Output $(if (Test-Path -LiteralPath $marker) { 'muted' } else { 'speaking' })
+            exit 0
+        }
+        if ($Mute) {
+            if (-not (Test-Path -LiteralPath $MuteRoot)) {
+                New-Item -ItemType Directory -Force -Path $MuteRoot -ErrorAction SilentlyContinue | Out-Null
+            }
+            Set-Content -LiteralPath $marker -Value (Get-Date -Format 'o') -Encoding UTF8
+            # Whatever this window had queued is no longer wanted, and it would
+            # otherwise be spoken by a drainer that is already running.
+            Clear-SessionNarration $id
+            $active = Get-ActiveSpeech
+            if ($active -and $active.Kind -ne 'manual') { Stop-PreviousSpeech }
+            Write-Output 'muted'
+        } else {
+            Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+            Write-Output 'speaking'
+        }
+        exit 0
+    }
+
     if ($Stop) {
         $was = Get-SpeechStatus
         # killing the player is instant and needs no cooperation from it, which is
@@ -1151,13 +1210,17 @@ try {
     # nothing, which is how a narration hook is debugged in a quiet room.
     if ($Queue -or $Drain) {
         if (-not $SpeakNarration) { exit 0 }
+        # Checked before queueing, not at the front of the queue: a muted window
+        # has no business putting anything into a queue shared with the windows
+        # that are still talking.
+        if (Test-SessionMuted '') { exit 0 }
         if ($Queue -and $TextFile) {
             $raw = Get-Content -LiteralPath $TextFile -Raw -Encoding UTF8
             $line = Convert-ToSpeech $raw -Light
             if ($line.Length -gt $MaxCharsNarration) { $line = $line.Substring(0, $MaxCharsNarration) }
             $line = Add-SessionLabel (Get-SessionLabel '') $line
             if ($Print) { Write-Output $line; exit 0 }
-            Add-NarrationLine $line
+            Add-NarrationLine $line (Get-SessionIdFor '')
         }
         Invoke-Drain
         exit 0
@@ -1185,6 +1248,10 @@ try {
         # user to come back to a window, so it had better say which one
         $transcript = ''
         if ($payload) { $transcript = [string]$payload.transcript_path }
+        if (Test-SessionMuted $transcript) { exit 0 }
+        # Still interrupts, unlike the cue. A notification means the window is
+        # blocked waiting for its user, and making that wait behind another
+        # window's sentence is the one case where being polite is the wrong call.
         Invoke-Speech (Add-SessionLabel (Get-SessionLabel $transcript) (Convert-ToSpeech $msg)) 'auto'
     }
     else {
@@ -1197,9 +1264,25 @@ try {
         $transcript = [string]$payload.transcript_path
         # a handover line, not the response - the response is played on request
         # with -Latest, which is what /speak with no arguments runs
+        #
+        # Read before the mute check, never after: Get-SessionCue consumes the cue
+        # file, and a muted window that banked its cues would empty them all over
+        # the user the moment it was unmuted.
         $cue = Get-SessionCue $transcript
+        if (Test-SessionMuted $transcript) { exit 0 }
         if (-not $cue) { $cue = $FallbackCue }
-        Invoke-Speech (Add-SessionLabel (Get-SessionLabel $transcript) (Convert-ToSpeech $cue -Light)) 'auto'
+        $line = Add-SessionLabel (Get-SessionLabel $transcript) (Convert-ToSpeech $cue -Light)
+        if ($Print) { Write-Output $line; exit 0 }
+        # Queued rather than spoken outright. Speaking outright kills whatever is
+        # playing, and with several windows open that is usually another window's
+        # handover, cut off mid-word by a turn ending somewhere the user was not
+        # looking. Dropping this session's own pending narration first is what
+        # keeps the cue's meaning intact: within a window, the handover really
+        # does supersede everything that window was in the middle of saying.
+        $me = Get-SessionIdFor $transcript
+        Clear-SessionNarration $me
+        Add-NarrationLine $line $me
+        Invoke-Drain
     }
 } catch {
     # A speech failure must never break the turn, so this still swallows the

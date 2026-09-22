@@ -94,6 +94,38 @@ Narration is billed like anything else, so it's capped and it's optional:
 { "SpeakNarration": false }
 ```
 
+## Running it on several windows
+
+Speech is per-session, and so is turning it off. Every window speaks by default;
+one that you want quiet, you mute:
+
+```
+/agent-speak:tts mute      →  muted      (this window only)
+/agent-speak:tts unmute    →  speaking
+```
+
+Bare phrases work, as with the other transport words — "be quiet in this window",
+"you can talk again".
+
+Mute covers everything the plugin says on its own initiative: cues, narration and
+notifications. It does **not** cover `/agent-speak:speak` or `/agent-speak:play` —
+asking out loud to hear something is not overruled by a flag you set an hour ago.
+Nothing is banked while muted, either: cues are consumed and discarded as they
+arrive, so unmuting never empties an hour of handovers over you.
+
+`stop` and `mute` are different tools. `stop` kills the sentence playing now;
+`mute` silences the window until you say otherwise.
+
+**Windows don't talk over each other.** Every automatic utterance goes through one
+queue, so a turn ending in a window you aren't looking at waits its turn instead
+of cutting off the one you are. Within a single window a cue still supersedes that
+window's own pending narration — once the turn is over, "I'm about to try X" is
+not worth hearing after X is finished.
+
+The exception is notifications, which still interrupt on purpose: a window
+notifying you is blocked waiting for you, and making that queue behind another
+window's sentence is the one case where being polite is wrong.
+
 ### Why it doesn't just read the thinking aloud
 
 The obvious version of this feature — narrate the model's reasoning — isn't
@@ -112,6 +144,7 @@ avoid.
 | --- | --- |
 | `/agent-speak:play` | read the last full response aloud |
 | `/agent-speak:tts pause` | pause, resume, stop, skip, or report status |
+| `/agent-speak:tts mute` | silence this window until you unmute it |
 | `/agent-speak:speak <text>` | speak a specific piece of text |
 
 And one the agent calls itself, mid-turn:
@@ -179,7 +212,8 @@ Everything lives in `~/.claude/agent-speak/`:
 | `speak-cues/`, `speak-labels/` | per-session copy |
 | `.tts.pid` | which process is playing |
 | `.tts.ctl`, `.tts.seek` | pause state and pending seek |
-| `queue/`, `.tts.drain.pid` | narration lines waiting, and who is speaking them |
+| `queue/`, `.tts.drain.pid` | lines waiting to be spoken, and who is speaking them |
+| `speak-mute/` | which windows have asked for quiet |
 | `.spoken-agents/` | which subagent completions have been announced already |
 | `errors.log` | failures the script swallowed rather than break your turn |
 
