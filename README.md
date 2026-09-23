@@ -153,6 +153,17 @@ And one the agent calls itself, mid-turn:
 node <plugin>/bin/agent-speak.js say "the line" --session <session_id>
 ```
 
+Two options exist because of how this command can go wrong. A long line has to
+survive shell quoting to reach it, so `--file <path>` reads the text from disk
+instead. And an argument the command does not recognise is an error rather than
+something to read aloud — `say --help` prints help, it does not say "dash dash
+help" out loud — so when a dash really is part of the line, put it after `--`:
+
+```
+node <plugin>/bin/agent-speak.js say --file cue.txt --session <session_id>
+node <plugin>/bin/agent-speak.js say -- --this-is-spoken-literally
+```
+
 Bare phrases work too — "play the full response", "pause", "stop talking",
 "keep going" — no slash needed.
 
