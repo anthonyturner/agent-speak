@@ -177,6 +177,78 @@ function takeSession(args) {
   return [args[i + 1], args.slice(0, i).concat(args.slice(i + 2))];
 }
 
+// A command that turns its arguments into speech cannot also treat an argument
+// it does not recognise as content. `say --help` used to say "dash dash help"
+// out loud, because the flag was never recognised and fell through to the text.
+// Anything shaped like an option is now either known, or an error — never
+// something the room hears.
+
+const USAGE = {
+  say: [
+    'agent-speak say "<text>" [--session <id>] [--print]',
+    '  --file <path>   read the text from a file, so long text needs no quoting',
+    '  --              everything after this is literal text, dashes included',
+  ].join('\n'),
+  speak: 'agent-speak speak <text-file> [label]',
+  play: 'agent-speak play [session_id]',
+  voice: [
+    'agent-speak voice <list|set|preview> [name or id]',
+    '  --              everything after this is a literal name',
+  ].join('\n'),
+  mute: 'agent-speak mute <session_id>',
+  unmute: 'agent-speak unmute <session_id>',
+  'mute-status': 'agent-speak mute-status <session_id>',
+};
+
+const KNOWN_OPTIONS = {
+  say: new Set(['--session', '--print', '--file']),
+  voice: new Set([]),
+};
+
+const TOP_LEVEL_USAGE = [
+  'agent-speak <command> [options]',
+  '',
+  '  say "<text>"           speak a line now, queued behind anything playing',
+  '  play [session_id]      read the last full response aloud',
+  '  speak <file> [label]   speak the contents of a text file',
+  '  voice <list|set|preview> [name or id]',
+  '  mute|unmute|mute-status <session_id>',
+  '  stop|pause|resume|toggle|status|forward|rewind',
+  '  hotkeys|diag',
+  '',
+  'Help never speaks: `say --help` prints this instead of reading it aloud.',
+  'To speak something that starts with a dash, put it after `--`.',
+].join('\n');
+
+/** Splits argv at `--`. Everything after it is content, never an option. */
+function splitLiteral(args) {
+  const i = args.indexOf('--');
+  return i === -1 ? [args, []] : [args.slice(0, i), args.slice(i + 1)];
+}
+
+const HELP_FLAGS = new Set(['--help', '-h', '-?', '/?', 'help']);
+const wantsHelp = (args) => args.some((a) => HELP_FLAGS.has(a));
+
+function usage(command) {
+  console.log(USAGE[command] ?? TOP_LEVEL_USAGE);
+  process.exit(0);
+}
+
+/**
+ * Rejects an option this command does not know, rather than passing it along as
+ * content. The message names the escape hatch, because sometimes the dash really
+ * is part of what you meant to say.
+ */
+function rejectUnknownOptions(command, args) {
+  const known = KNOWN_OPTIONS[command] ?? new Set();
+  const bad = args.find((a) => a.length > 1 && a.startsWith('-') && !known.has(a));
+  if (!bad) return;
+  console.error(`agent-speak ${command}: unknown option ${bad}`);
+  console.error(USAGE[command] ?? TOP_LEVEL_USAGE);
+  console.error(`\nto use it as text: agent-speak ${command} -- ${bad}`);
+  process.exit(2);
+}
+
 function readStdin(done) {
   let raw = '';
   process.stdin.setEncoding('utf8');
@@ -298,6 +370,13 @@ function queueLine(text, sessionId, print) {
 function main() {
   const [command, ...rest] = process.argv.slice(2);
 
+  // Help is answered before anything else, and on every platform, so asking a
+  // command what it does can never be mistaken for telling it what to do.
+  if (command === undefined || HELP_FLAGS.has(command)) {
+    console.log(TOP_LEVEL_USAGE);
+    process.exit(0);
+  }
+
   // Everything below this line needs Windows. Say nothing and succeed.
   if (!isWindows()) {
     if (command === 'doctor') {
@@ -354,14 +433,41 @@ function main() {
     // outright: the agent may narrate twice in a row, and the second line must
     // not cut off the first.
     case 'say': {
-      const [sessionId, words] = takeSession(rest.filter((a) => a !== '--print'));
-      const text = words.join(' ').trim();
+      const [flagged, literal] = splitLiteral(rest);
+      if (wantsHelp(flagged)) usage('say');
+
+      const print = flagged.includes('--print');
+      const [sessionId, afterSession] = takeSession(flagged.filter((a) => a !== '--print'));
+
+      // `--file` exists so a long line never has to survive shell quoting,
+      // which is the other half of how the wrong thing gets spoken.
+      let text = null;
+      let words = afterSession;
+      const fi = words.indexOf('--file');
+      if (fi !== -1) {
+        const file = words[fi + 1];
+        if (!file) {
+          console.error('agent-speak say --file <path>');
+          process.exit(2);
+        }
+        words = words.slice(0, fi).concat(words.slice(fi + 2));
+        try {
+          text = fs.readFileSync(file, 'utf8').trim();
+        } catch (e) {
+          console.error(`agent-speak say: cannot read ${file}: ${e.message}`);
+          process.exit(2);
+        }
+      }
+
+      rejectUnknownOptions('say', words);
+      if (text === null) text = [...words, ...literal].join(' ').trim();
+
       if (!text) {
-        console.error('agent-speak say "<text>" [--session <id>]');
+        console.error(USAGE.say);
         process.exit(2);
       }
-      queueLine(text, sessionId, rest.includes('--print'));
-      if (!rest.includes('--print')) console.log('queued');
+      queueLine(text, sessionId, print);
+      if (!print) console.log('queued');
       break;
     }
 
@@ -433,8 +539,12 @@ function main() {
     // The query is joined back from the remaining argv rather than taken as
     // rest[1], so an unquoted two-word name still resolves.
     case 'voice': {
-      const action = rest[0] || 'list';
-      const query = rest.slice(1).join(' ').trim();
+      const [flagged, literal] = splitLiteral(rest);
+      if (wantsHelp(flagged)) usage('voice');
+      const action = flagged[0] || 'list';
+      const nameArgs = flagged.slice(1);
+      rejectUnknownOptions('voice', nameArgs);
+      const query = [...nameArgs, ...literal].join(' ').trim();
 
       if (action === 'list') {
         runPowerShell(SPEAK, ['-Voices']);
@@ -466,11 +576,12 @@ function main() {
       runPowerShell(SPEAK, ['-Diag']);
       return;
 
+    // An unrecognised command is a mistake, and exits non-zero so a script
+    // that mistypes one finds out rather than carrying on in silence.
     default:
-      console.log(
-        'agent-speak <say|play|speak|mute|unmute|mute-status|voice|stop|pause|resume|toggle|status|forward|rewind|hotkeys|diag>'
-      );
-      break;
+      console.error(`agent-speak: unknown command ${command}`);
+      console.error(TOP_LEVEL_USAGE);
+      process.exit(2);
   }
 }
 
