@@ -26,7 +26,7 @@
   "_replay": "Replaying skips assistant messages shorter than this, so 'Playing.' is never what gets read back.",
   "MinReplayChars": 400,
 
-  "_narration": "Lines spoken during a turn: decisions the agent narrates, and one line per subagent that finishes. Set SpeakNarration to false for one utterance per turn, as before. These are billed like any other characters, so the queue is capped and the oldest waiting line is dropped first.",
+  "_narration": "Lines spoken during a turn: decisions the agent narrates, and one line when each subagent starts and one when it finishes. Set SpeakNarration to false for one utterance per turn, as before. These are billed like any other characters, so the queue is capped and the oldest waiting line is dropped first.",
   "SpeakNarration": true,
   "MaxCharsNarration": 400,
   "NarrationQueueMax": 4,

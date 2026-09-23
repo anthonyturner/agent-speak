@@ -22,6 +22,19 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/agent-speak.js\" subagent-start",
+            "async": true,
+            "timeout": 120
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [

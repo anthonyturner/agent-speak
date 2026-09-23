@@ -77,10 +77,16 @@ line and carries on working:
 
 > "Going with CSS derivation rather than hand-tuned pixels."
 
-**Each subagent says when it's done.** Run anything that fans work out and you
-hear the shape of it going past:
+**Each subagent says when it starts and when it's done.** Run a pipeline and you
+hear every handover go past, in order:
 
-> "The engineer agent finished: wire the manifest window."
+> "The dev agent finished: implement issue 561."
+> "Starting the QA agent: review pull request 562."
+
+The start line comes from a `PreToolUse` hook on the `Agent` tool, which is the
+only point where both the agent's type and its one-line description are known.
+The finish line comes from `SubagentStop`, which names the agent's type, so when
+several agents run at once, the one that finished is the one you hear about.
 
 These **queue**. Everything else here speaks by interrupting, which is right for a
 handover and wrong for a stream of short lines — you'd get the first syllable of
