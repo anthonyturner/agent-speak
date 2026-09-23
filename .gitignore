@@ -2,3 +2,8 @@
 *.log
 .tts.*
 config.json
+
+# Personal fallback copy of the pre-plugin scripts - kept next to what it backs
+# up, but never shipped: a published plugin has no business carrying a 37 KB
+# superseded engine.
+fallback/
