@@ -55,7 +55,7 @@ Keep it short, and rewrite it if the session moves on to something else.
 
 You may also speak DURING a turn, at a decision point the user would want to
 overhear - choosing between two approaches, changing course after finding
-something out, or handing work to a subagent:
+something out:
   node "<plugin>/bin/agent-speak.js" say "the line" --session <session_id>
 
 Say the decision and why it went that way, in one sentence: "Going with CSS
@@ -263,26 +263,63 @@ function readStdin(done) {
   process.stdin.on('error', () => done(null));
 }
 
-/** 'general-purpose' is what the tool calls it; nobody says that out loud. */
+/**
+ * One agent type, however it was spelled. The `Agent` call leaves the type out
+ * for the default agent, and a hook payload may carry a plugin prefix the call
+ * did not, so both are folded away before two types are compared.
+ */
+function agentTypeKey(type) {
+  const t = String(type || '').trim().toLowerCase();
+  return t.slice(t.lastIndexOf(':') + 1) || 'general-purpose';
+}
+
+/**
+ * 'general-purpose' is what the tool calls it; nobody says that out loud. Short
+ * words are capitalised, because a voice reads "qa" as a word and "QA" as letters.
+ */
 function spokenAgentName(type) {
-  const t = String(type || '').trim();
-  if (!t || t === 'general-purpose' || t === 'claude') return 'helper';
-  return t.replace(/-/g, ' ').toLowerCase();
+  const t = agentTypeKey(type);
+  if (t === 'general-purpose' || t === 'claude') return 'helper';
+  return t
+    .split('-')
+    .map((w) => (w.length <= 2 ? w.toUpperCase() : w))
+    .join(' ');
+}
+
+/** A description as a spoken clause, without a trailing full stop to double up. */
+function spokenDescription(description) {
+  return String(description || '').trim().replace(/[.\s]+$/, '');
+}
+
+/**
+ * The line for a subagent being handed work, from the `Agent` call about to run.
+ *
+ * PreToolUse is the hook for this rather than SubagentStart: SubagentStart knows
+ * the agent's type but not what it was asked to do, and the one-line description
+ * written for a human is the part worth hearing.
+ */
+function subagentStartAnnouncement(payload) {
+  const input = payload && payload.tool_input;
+  if (!input || typeof input !== 'object') return null;
+  const who = spokenAgentName(input.subagent_type);
+  const what = spokenDescription(input.description);
+  return what ? `Starting the ${who} agent: ${what}.` : `Starting the ${who} agent.`;
 }
 
 /**
  * Which subagent just finished, and what it was asked to do.
  *
- * SubagentStop says only that *a* subagent ended; it carries nothing about which
- * one. The subagent's own conversation is no help either - it is not persisted
- * anywhere on disk. What is persisted, in the parent's transcript, is the `Agent`
- * tool_use that started it, carrying the agent type and a one-line description
- * written for a human to read. That is the announcement.
+ * SubagentStop names the agent's type but not what it was asked to do. That is
+ * persisted in the parent's transcript, on the `Agent` tool_use that started
+ * it, as a one-line description written for a human to read. That is the
+ * announcement.
  *
- * Matching the right call matters once a fan-out is running. Completions do not
- * arrive in spawn order, so the finished one is taken to be the oldest unspoken
- * call whose tool_result has already landed; if none has, the oldest unspoken
- * call is the better guess than silence.
+ * Matching the right call matters once a fan-out is running. Only calls of the
+ * type that finished are candidates; older Claude Code sends no type, and then
+ * every call is. Completions do not arrive in spawn order, so among those the
+ * finished one is taken to be the oldest unspoken call whose tool_result has
+ * already landed; if none has, the oldest unspoken call is the better guess
+ * than silence.
  */
 function subagentAnnouncement(payload) {
   const transcript = payload && payload.transcript_path;
@@ -334,7 +371,16 @@ function subagentAnnouncement(payload) {
     /* no state yet, or unreadable - either way nothing has been announced */
   }
 
-  const pending = calls.filter((c) => c.id && !announced.includes(c.id));
+  let candidates = calls;
+  if (payload.agent_type) {
+    const key = agentTypeKey(payload.agent_type);
+    const sameType = calls.filter((c) => agentTypeKey(c.type) === key);
+    // No call of that type at all means the two spell it differently in some
+    // way not yet seen, so fall back to every call, as before this check. Calls
+    // of that type that were all spoken already mean silence, not another agent.
+    if (sameType.length) candidates = sameType;
+  }
+  const pending = candidates.filter((c) => c.id && !announced.includes(c.id));
   if (!pending.length) return null;
   const done = pending.find((c) => settled.has(c.id)) || pending[0];
 
@@ -349,7 +395,7 @@ function subagentAnnouncement(payload) {
     // a smaller failure than never saying it, so carry on.
   }
 
-  const what = String(done.description || '').trim().replace(/[.\s]+$/, '');
+  const what = spokenDescription(done.description);
   return what
     ? `The ${spokenAgentName(done.type)} agent finished: ${what}.`
     : `The ${spokenAgentName(done.type)} agent finished.`;
@@ -415,6 +461,14 @@ function main() {
     case 'notify':
       runPowerShell(SPEAK, ['-Mode', 'notify', ...(rest.includes('--print') ? ['-Print'] : [])], {
         pipeStdin: true,
+      });
+      return;
+
+    case 'subagent-start':
+      readStdin((payload) => {
+        const line = subagentStartAnnouncement(payload);
+        if (!line) process.exit(0);
+        queueLine(line, (payload && payload.session_id) || '', rest.includes('--print'));
       });
       return;
 
