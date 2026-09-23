@@ -36,7 +36,7 @@ the job object that silently killed detached playback.
 
 ```
 /plugin marketplace add anthonyturner/agent-speak
-/plugin install agent-speak
+/plugin install agent-speak@agent-speak
 ```
 
 Or to try it locally, from the directory above this one:

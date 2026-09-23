@@ -1,7 +1,7 @@
 {
   "name": "agent-speak",
   "displayName": "Agent Speak",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Your agent tells you it is done, out loud, in one line - then reads the full answer back on request. Media keys pause, resume and skip it.",
   "author": {
     "name": "Anthony Turner"
