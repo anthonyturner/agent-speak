@@ -1,0 +1,14 @@
+{
+  "title": "Agent Speak - Voice Plugin for AI Coding Agents",
+  "description": "A plugin I built that gives an AI coding agent a spoken handover: when a task finishes it says one short line naming what is done and what to do next, instead of narrating the whole response back at you. Built the speech pipeline on the ElevenLabs API with an offline Windows SAPI5 fallback, pausable playback, and a low-level keyboard hook that claims the media keys only while audio is actually playing. Prototyping this plugin is what shaped the ElevenLabs voice agent that now ships inside the Rivals Pulse app.",
+  "tags": [
+    "Node.js",
+    "ElevenLabs API",
+    "Text-to-Speech",
+    "Voice AI",
+    "Windows APIs",
+    "PowerShell",
+    "Developer Tooling",
+    "AI-Assisted Development"
+  ]
+}
