@@ -1130,6 +1130,12 @@ function Show-Diag {
                   ForEach-Object { $_.VoiceInfo.Name }
     } catch { }
     $keyState = if ($key) { "found ({0} chars)" -f $key.Length } else { 'NOT SET' }
+    # ElevenLabs keys start with sk_. Anything else - another service's key, or the
+    # wrong field pasted from the dashboard - gets a bare HTTP 400 with no body,
+    # which reads like a permissions problem, so name the real cause up front.
+    if ($key -and -not $key.StartsWith('sk_')) {
+        $keyState += " - does NOT look like an ElevenLabs key (they start with sk_)"
+    }
     $voiceState = if ($ElevenVoiceId) { $ElevenVoiceId } else { 'NOT SET' }
     $ready = $UseElevenLabs -and $key -and $ElevenVoiceId
     $picking = if ($Voice) { "-Voice override: $Voice" }
@@ -1162,7 +1168,9 @@ function Show-Diag {
     # nothing about the key being bad.
     $vr = Invoke-ElevenApi $key 'voices'
     if ($vr.Code -ne 200) {
-        Write-Output "Key check          : FAILED - HTTP $($vr.Code) - wrong key, or it lacks Voices read"
+        $why = if (-not $key.StartsWith('sk_')) { 'not an ElevenLabs key - create one in the dashboard and setx it' }
+               else { 'wrong key, or it lacks Voices read' }
+        Write-Output "Key check          : FAILED - HTTP $($vr.Code) - $why"
         return
     }
     Write-Output "Key check          : OK - the key is valid"
