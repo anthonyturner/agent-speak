@@ -936,6 +936,13 @@ function Wait-ForContinue {
     return $false
 }
 
+function Test-ResumedSince([datetime]$since) {
+    if ((Get-ControlState) -ne 'play') { return $false }
+    try {
+        return ((Get-Item -LiteralPath $transportFile -ErrorAction Stop).LastWriteTime -gt $since)
+    } catch { return $false }
+}
+
 function Invoke-Reading([string]$text, [string]$Kind, [string]$label = '') {
     # A whole response, in parts of $ContinueEveryParagraphs paragraphs with a
     # question between them. One player holds the speakers for the whole
@@ -954,7 +961,11 @@ function Invoke-Reading([string]$text, [string]$Kind, [string]$label = '') {
         for ($i = 0; $i -lt $parts.Count; $i++) {
             Invoke-SpeechEngine $parts[$i]
             if ($i -eq $parts.Count - 1) { break }
+            $asked = Get-Date
             Invoke-SpeechEngine $ContinuePrompt
+            # A resume while the question was still being spoken found nothing
+            # paused to resume, so it shows only as a control run since asking.
+            if (Test-ResumedSince $asked) { continue }
             if (-not (Wait-ForContinue)) { break }
         }
     } finally {
