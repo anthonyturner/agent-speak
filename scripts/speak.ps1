@@ -1624,7 +1624,8 @@ try {
         # ends with a one-word acknowledgement. Reading that out would replace
         # the reading the listener just asked to continue, so it says nothing.
         $newest = Get-LastAssistantText $transcript 0
-        if ((Test-RecentTransport) -and $newest.Length -lt $MinReplayChars) { exit 0 }
+        # A cue is the agent's own line and keeps its old behaviour.
+        if ($EndOfTurn -ne 'cue' -and (Test-RecentTransport) -and $newest.Length -lt $MinReplayChars) { exit 0 }
 
         if ($EndOfTurn -eq 'full') {
             $text = Select-Portion (Convert-ToSpeech $newest) 'full' $MaxCharsManual
