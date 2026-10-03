@@ -33,7 +33,7 @@ const STATE_DIR = path.join(os.homedir(), '.claude', 'agent-speak');
 const ANNOUNCED_DIR = path.join(STATE_DIR, '.spoken-agents');
 
 /** What a Claude Code session is told at the start, so cues get written at all. */
-const SESSION_BRIEF = `<agent-speak>
+const SESSION_BRIEF_TEMPLATE = `<agent-speak>
 Speech is enabled in this session, and it is a doorbell rather than a reading:
 at the end of every turn the user hears one short line, not your response.
 
@@ -56,7 +56,7 @@ Keep it short, and rewrite it if the session moves on to something else.
 You may also speak DURING a turn, at a decision point the user would want to
 overhear - choosing between two approaches, changing course after finding
 something out:
-  node "<plugin>/bin/agent-speak.js" say "the line" --session <session_id>
+  node "${path.join(PLUGIN_ROOT, 'bin', 'agent-speak.js')}" say "the line" --session <session_id>
 
 Say the decision and why it went that way, in one sentence: "Going with CSS
 derivation rather than hand-tuned pixels." Not what you are about to type, not
@@ -65,9 +65,23 @@ turn, none in a short one. These queue and are spoken in order, so they do not
 cut each other off, and the end-of-turn cue still closes the turn.
 
 The user can say "play the full response" to hear the whole answer, and
-"pause", "resume" or "stop" to control playback. Treat those bare phrases as
-commands, not as conversation.
+"pause", "resume" or "stop" to control playback. A long reading stops every
+few paragraphs to ask "Continue?"; a bare "continue" or "keep reading" means
+resume. Treat those bare phrases as commands, not as conversation.
 </agent-speak>`;
+
+/**
+ * The brief, with this session's id written into it.
+ *
+ * The model is never told its own session id, so a brief that only says
+ * `<session_id>` leaves it guessing at the file name. In practice it writes no
+ * cue at all, and every turn ends with the generic fallback. The SessionStart
+ * payload carries the id, so the brief names the real file.
+ */
+function sessionBrief(sessionId) {
+  const id = String(sessionId || '').trim();
+  return id ? SESSION_BRIEF_TEMPLATE.split('<session_id>').join(id) : SESSION_BRIEF_TEMPLATE;
+}
 
 function isWindows() {
   return process.platform === 'win32';
@@ -446,8 +460,11 @@ function main() {
       }
       // stdout from SessionStart is added to the model's context, which is the
       // only way the instruction to write cues can travel with the plugin.
-      console.log(SESSION_BRIEF);
-      break;
+      readStdin((payload) => {
+        console.log(sessionBrief(payload && payload.session_id));
+        process.exit(0);
+      });
+      return;
 
     // `--print` shows what would be spoken and speaks nothing. It is the only
     // way to debug a hook without filling the room with test audio, and it

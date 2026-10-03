@@ -11,8 +11,24 @@
   "ElevenStability": 0.5,
   "ElevenSimilarity": 0.75,
 
-  "_cost": "Every character here is billed. The end-of-turn cue is one short sentence; this cap only bites when you play a full response back.",
+  "_cost": "Every character here is billed. The end-of-turn cue is one short sentence; this cap only bites when a full response is read.",
   "MaxCharsManual": 6000,
+
+  "_endOfTurn": "What a turn ends with: 'cue' (the agent's one line), 'gist' (the opening paragraphs of the response, at least GistMinWords and stopping near GistMaxWords) or 'full' (the whole response, read in a player of its own).",
+  "EndOfTurn": "cue",
+  "GistMinWords": 60,
+  "GistMaxWords": 120,
+
+  "_continue": "A full reading (EndOfTurn 'full', or play) stops after this many paragraphs, asks ContinuePrompt and waits paused; resume reads on, stop ends it, and no answer within ContinueWaitSec ends it too. 0 reads straight through.",
+  "ContinueEveryParagraphs": 0,
+  "ContinuePrompt": "Continue?",
+  "ContinueWaitSec": 600,
+
+  "_projects": "Per-project settings, keyed by an absolute directory; either slash works. A value is a voice id, or an object of the same keys used here. The longest matching path wins, so a subdirectory inherits its repo's settings.",
+  "Projects": {
+    "C:/repos/some-project": "XrExE9yKIg1WjnnlVkGX",
+    "C:/repos/other-project": { "EndOfTurn": "full", "ContinueEveryParagraphs": 2 }
+  },
 
   "_fallback": "Used when no key or voice id is configured. Free, offline, robotic.",
   "Rate": 1,
