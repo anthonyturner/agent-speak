@@ -63,6 +63,13 @@ param(
     [switch]$Forward,
     [switch]$Rewind,
     [int]$StepMs = 0,
+    # Used by the detached reading the Stop hook starts when EndOfTurn is 'full':
+    # it already knows the transcript and the project, so neither is guessed.
+    # -AutoReading marks the reading as one nobody asked for, so mute applies
+    # and the next turn's reading may replace it.
+    [string]$Transcript = '',
+    [string]$ProjectDir = '',
+    [switch]$AutoReading,
     # Supplied by the Stop hook, which receives it directly. Without it the manual
     # paths have to guess the session from whichever transcript was written last,
     # and with two sessions open that guess replays the wrong one.
@@ -71,9 +78,10 @@ param(
 
 # ---------------------------------------------------------------- tunables --
 # The Stop hook speaks at the end of every turn whether or not it was asked to.
-# It no longer reads any part of the response: it speaks the session's handover
-# cue instead (see Get-SessionCue). An explicit /speak is a deliberate "read me
-# all of it", so that path still reads the whole thing.
+# By default it reads no part of the response: it speaks the session's handover
+# cue instead (see Get-SessionCue), and $EndOfTurn below can change that. An
+# explicit /speak is a deliberate "read me all of it", so that path still reads
+# the whole thing.
 #
 # $ScopeAuto now applies only to notifications, which have no cue of their own.
 $FallbackCue    = 'Response ready.'   # spoken when a turn wrote no cue of its own
@@ -93,6 +101,33 @@ $MaxCharsAuto   = 700        # hard cap for notification speech
 $MaxCharsManual = 6000       # hard cap for /speak - every character here is billed
 $MinChars       = 120        # summary mode: keep adding paragraphs until this is met
 $SpeakTables    = $true      # read table rows as "cell, cell, cell" instead of skipping them
+
+# -- end of turn --------------------------------------------------------------
+# What the Stop hook says when a turn ends:
+#   'cue'  - the one line the session wrote for the purpose (the default)
+#   'gist' - the opening of the response, long enough to know what happened
+#   'full' - the whole response, read detached so it outlives the hook
+$EndOfTurn      = 'cue'
+# 'gist' reads whole paragraphs until it has at least this many words, so a
+# one-line opener is followed by the paragraph that explains it...
+$GistMinWords   = 60
+# ...and stops near this many, at a sentence end where there is one, so a long
+# opening paragraph is not read to the end.
+$GistMaxWords   = 120
+
+# -- continue prompts ----------------------------------------------------------
+# A full reading (EndOfTurn 'full', or play) stops after this many paragraphs,
+# asks the question below, and waits paused. Resume reads on; stop ends it. A
+# reading nobody resumes ends on its own after $ContinueWaitSec. 0 reads
+# straight through, as before.
+$ContinueEveryParagraphs = 0
+$ContinuePrompt          = 'Continue?'
+$ContinueWaitSec         = 600
+
+# Per-project overrides, keyed by an absolute directory. See Use-ProjectSettings.
+# Declared here, empty, because the config loader below only assigns to names
+# that already exist as variables.
+$Projects = $null
 
 # -- narration ----------------------------------------------------------------
 # Lines spoken *during* a turn rather than at the end of it: a decision the agent
@@ -205,6 +240,11 @@ $ctlFile = Join-Path $StateRoot '.tts.ctl'
 # the two in one file would mean the player re-seeking on every poll, so seeks get
 # their own file, holding a millisecond delta that the player consumes and deletes.
 $seekFile = Join-Path $StateRoot '.tts.seek'
+# When a transport control last ran. A turn that ends this soon after one, with a
+# short reply, was a turn spent saying "continue" or "pause", and its end is not
+# worth announcing (see Test-RecentTransport).
+$transportFile = Join-Path $StateRoot '.tts.transport'
+$TransportQuietSec = 45
 $SeekStepMs     = 10000
 $PollMs         = 120
 $voiceCacheFile = Join-Path $StateRoot '.tts-voices.json'
@@ -237,6 +277,52 @@ if (Test-Path -LiteralPath $configFile) {
         }
     } catch { }
 }
+
+# ----------------------------------------------------- per-project settings --
+# One setting for every window is wrong as soon as one project wants something
+# different: its own voice, or the full response read aloud. Projects maps an
+# absolute directory to a voice id, or to an object using the same key names as
+# the top level. The longest matching path wins, so a subdirectory inherits its
+# repo's settings unless it names its own.
+#
+# A hook runs in the directory of the session that triggered it, so the working
+# directory is the project. A detached reading has lost that, so it is passed
+# -ProjectDir. Relative keys are skipped rather than resolved: resolved against
+# whatever the working directory happens to be, they would match at random.
+function ConvertTo-ComparablePath([string]$p) {
+    return ($p -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
+}
+
+function Use-ProjectSettings([string]$dir) {
+    if (-not $Projects -or -not $dir) { return }
+    $here = ConvertTo-ComparablePath $dir
+    $best = $null
+    $bestLength = -1
+    foreach ($entry in $Projects.PSObject.Properties) {
+        $key = ConvertTo-ComparablePath $entry.Name
+        if ($key -notmatch '^([a-z]:)?/') { continue }
+        $inside = ($here -eq $key) -or $here.StartsWith("$key/")
+        if ($inside -and $key.Length -gt $bestLength) {
+            $best = $entry.Value
+            $bestLength = $key.Length
+        }
+    }
+    if ($null -eq $best) { return }
+    if ($best -is [string]) {
+        Set-Variable -Name 'ElevenVoiceId' -Value $best -Scope Script
+        return
+    }
+    foreach ($prop in $best.PSObject.Properties) {
+        if ($prop.Name -eq 'Projects') { continue }
+        if (Get-Variable -Name $prop.Name -Scope Script -ErrorAction SilentlyContinue) {
+            Set-Variable -Name $prop.Name -Value $prop.Value -Scope Script
+        }
+    }
+}
+
+try {
+    Use-ProjectSettings $(if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path })
+} catch { }
 
 # ----------------------------------------------------------- session label --
 # The Stop hook speaks at the end of every turn, and several Claude sessions are
@@ -329,6 +415,8 @@ function Get-SessionCue([string]$transcript) {
 }
 
 function Get-LatestTranscript {
+    # A transcript handed over by the Stop hook is not a guess at all.
+    if ($Transcript -and (Test-Path -LiteralPath $Transcript)) { return $Transcript }
     # An explicit session id wins: 'the newest file on disk' is a guess, and it is
     # wrong exactly when it matters, which is when several sessions are open.
     if ($SessionId) {
@@ -395,10 +483,12 @@ function Convert-ToSpeech([string]$s, [switch]$Light) {
             $kept += $line
         }
         $s = $kept -join "`n"
-        # heading, list, quote and emphasis markers
-        $s = [regex]::Replace($s, '(?m)^\s{0,3}#{1,6}\s*', '')
-        $s = [regex]::Replace($s, '(?m)^\s*[-*+]\s+', '')
-        $s = [regex]::Replace($s, '(?m)^\s*>\s?', '')
+        # heading, list, quote and emphasis markers. [ \t], never \s: \s matches
+        # the newline of a blank line above, and swallowing it merges a list into
+        # the paragraph before it - which a gist or a reading counts by.
+        $s = [regex]::Replace($s, '(?m)^[ \t]{0,3}#{1,6}[ \t]*', '')
+        $s = [regex]::Replace($s, '(?m)^[ \t]*[-*+][ \t]+', '')
+        $s = [regex]::Replace($s, '(?m)^[ \t]*>[ \t]?', '')
         $s = $s -replace '\*\*', '' -replace '__', ''
         # bare file paths and URLs are unlistenable character-by-character
         $s = [regex]::Replace($s, '\S*[\\/]\S*', ' ')
@@ -425,6 +515,47 @@ function Select-Portion([string]$s, [string]$scope, [int]$max) {
     }
     if ($out.Length -gt $max) { $out = $out.Substring(0, $max) }
     return $out
+}
+
+function Get-Words([string]$s) {
+    return @($s -split '\s+' | Where-Object { $_ })
+}
+
+function Select-Gist([string]$s) {
+    # The opening of a response, which is where a response written to be read
+    # says what happened. Whole paragraphs until $GistMinWords: a short first
+    # paragraph ("Found it.") is a headline, and the gist is the one after it.
+    $paras = @([regex]::Split($s, '\n\s*\n') | Where-Object { $_.Trim() })
+    $out = @()
+    $count = 0
+    foreach ($p in $paras) {
+        $out += $p.Trim()
+        $count += (Get-Words $p).Count
+        if ($count -ge $GistMinWords) { break }
+    }
+    $gist = $out -join "`n`n"
+    $words = Get-Words $gist
+    if ($words.Count -le $GistMaxWords) { return $gist }
+
+    # Too long: keep $GistMaxWords words, then back off to the last sentence end
+    # if that keeps most of them. A sentence cut mid-way sounds like a fault.
+    $cut = ($words[0..($GistMaxWords - 1)]) -join ' '
+    $end = $cut.LastIndexOfAny([char[]]'.!?')
+    if ($end -ge ($cut.Length / 2)) { return $cut.Substring(0, $end + 1) }
+    return "$cut..."
+}
+
+function Split-ReadingParts([string]$s, [int]$every) {
+    # A reading in parts of $every paragraphs, so a listener can stop between
+    # them. 0 or less is one part: straight through.
+    if ($every -le 0) { return ,@($s) }
+    $paras = @([regex]::Split($s, '\n\s*\n') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $parts = @()
+    for ($i = 0; $i -lt $paras.Count; $i += $every) {
+        $last = [Math]::Min($i + $every, $paras.Count) - 1
+        $parts += (($paras[$i..$last]) -join "`n`n")
+    }
+    return ,$parts
 }
 
 function Get-ActiveSpeech {
@@ -494,6 +625,23 @@ function Add-SeekRequest([int]$deltaMs) {
         try { $pending = [int](Get-Content -LiteralPath $seekFile -TotalCount 1 -ErrorAction Stop) } catch { $pending = 0 }
     }
     try { Set-Content -LiteralPath $seekFile -Value ([string]($pending + $deltaMs)) -Encoding ascii -ErrorAction Stop } catch { }
+}
+
+function Register-Transport {
+    try { Set-Content -LiteralPath $transportFile -Value (Get-Date -Format 'o') -Encoding ascii -ErrorAction Stop } catch { }
+}
+
+function Test-RecentTransport {
+    # Consumed, like a cue: the quiet covers the one turn that ran the control,
+    # not every turn that happens to end in the next $TransportQuietSec.
+    if (-not (Test-Path -LiteralPath $transportFile)) { return $false }
+    $recent = $false
+    try {
+        $age = (Get-Date) - (Get-Item -LiteralPath $transportFile -ErrorAction Stop).LastWriteTime
+        $recent = ($age.TotalSeconds -lt $TransportQuietSec)
+    } catch { }
+    if (-not $Print) { Remove-Item -LiteralPath $transportFile -Force -ErrorAction SilentlyContinue }
+    return $recent
 }
 
 function Read-SeekRequest {
@@ -734,14 +882,22 @@ function Invoke-Sapi([string]$text) {
     }
 }
 
-function Invoke-Speech([string]$text, [string]$Kind = 'auto') {
-    if (-not $text) { return }
-    if ($Print) { Write-Output $text; return }
+function Start-SpeechTurn([string]$Kind) {
+    # Takes the speakers: stops whatever is playing and records this process as
+    # the player, so pause, resume and stop can find it.
     Stop-PreviousSpeech
     # a pause left over from the previous playback would start this one muted
     Clear-ControlState
     $me = Get-Process -Id $PID
     Set-Content -LiteralPath $pidFile -Value "$PID|$($me.StartTime.Ticks)|$Kind" -Encoding ascii
+}
+
+function Stop-SpeechTurn {
+    Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+    Clear-ControlState
+}
+
+function Invoke-SpeechEngine([string]$text) {
     $wav = ''
     try {
         $wav = Get-ElevenAudio $text
@@ -752,9 +908,73 @@ function Invoke-Speech([string]$text, [string]$Kind = 'auto') {
         }
     } finally {
         if ($wav) { Remove-Item -LiteralPath $wav -Force -ErrorAction SilentlyContinue }
-        Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
-        Clear-ControlState
     }
+}
+
+function Invoke-Speech([string]$text, [string]$Kind = 'auto') {
+    if (-not $text) { return }
+    if ($Print) { Write-Output $text; return }
+    Start-SpeechTurn $Kind
+    try {
+        Invoke-SpeechEngine $text
+    } finally {
+        Stop-SpeechTurn
+    }
+}
+
+function Wait-ForContinue {
+    # Held paused, as if the listener had pressed pause, so status says 'paused'
+    # and resume - or the hotkey, or "continue" - is what carries on. $true to
+    # read on; $false when nobody answered in time. Stop needs no case here: it
+    # kills this process.
+    Set-ControlState 'pause'
+    $deadline = (Get-Date).AddSeconds($ContinueWaitSec)
+    while ((Get-Date) -lt $deadline) {
+        if ((Get-ControlState) -eq 'play') { return $true }
+        Start-Sleep -Milliseconds $PollMs
+    }
+    return $false
+}
+
+function Invoke-Reading([string]$text, [string]$Kind, [string]$label = '') {
+    # A whole response, in parts of $ContinueEveryParagraphs paragraphs with a
+    # question between them. One player holds the speakers for the whole
+    # reading: a fresh Invoke-Speech per part would see the previous part's lock
+    # as someone else's speech, and stop it - that is, itself.
+    if (-not $text) { return }
+    $parts = Split-ReadingParts $text $ContinueEveryParagraphs
+    # Labelled after splitting, so the label is not counted as a paragraph.
+    $parts[0] = Add-SessionLabel $label $parts[0]
+    if ($Print) {
+        Write-Output ($parts -join "`n`n[$ContinuePrompt]`n`n")
+        return
+    }
+    Start-SpeechTurn $Kind
+    try {
+        for ($i = 0; $i -lt $parts.Count; $i++) {
+            Invoke-SpeechEngine $parts[$i]
+            if ($i -eq $parts.Count - 1) { break }
+            Invoke-SpeechEngine $ContinuePrompt
+            if (-not (Wait-ForContinue)) { break }
+        }
+    } finally {
+        Stop-SpeechTurn
+    }
+}
+
+function Start-DetachedReading([string]$transcript, [string]$session, [string]$dir) {
+    # The Stop hook has a timeout, and a whole response read aloud - let alone
+    # one waiting on "Continue?" - outlasts it. So the hook hands the reading to
+    # a player of its own and returns. Start-Process launches through the shell,
+    # which is what lets the player outlive the hook's job object (see
+    # runDetached in bin/agent-speak.js). -ArgumentList does no quoting of its
+    # own, so every value is quoted here.
+    $quote = { param($v) '"' + ([string]$v).Replace('"', '') + '"' }
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (& $quote $PSCommandPath),
+                 '-Latest', '-AutoReading', '-Transcript', (& $quote $transcript))
+    if ($session) { $argList += @('-SessionId', (& $quote $session)) }
+    if ($dir) { $argList += @('-ProjectDir', (& $quote $dir)) }
+    Start-Process -FilePath 'powershell' -ArgumentList $argList -WindowStyle Hidden
 }
 
 # ------------------------------------------------------------- narration ----
@@ -918,10 +1138,11 @@ function Invoke-DrainOnce {
     if (-not $lock) { return $false }
     try {
         while ($true) {
-            # A reading the user explicitly asked for outranks narration. Stop
-            # rather than drop: the next queued line starts a fresh drainer.
+            # A reading outranks narration, whether the user asked for it or
+            # EndOfTurn 'full' started it. Stop rather than drop: the next queued
+            # line, or the reading ending, starts a fresh drainer.
             $active = Get-ActiveSpeech
-            if ($active -and $active.Kind -eq 'manual') { break }
+            if ($active -and ($active.Kind -eq 'manual' -or $active.Kind -eq 'reading')) { break }
 
             $next = @(Get-ChildItem -LiteralPath $QueueRoot -Filter *.txt -File -ErrorAction SilentlyContinue |
                       Sort-Object Name | Select-Object -First 1)
@@ -1268,6 +1489,8 @@ try {
         exit 0
     }
 
+    if ($Stop -or $Forward -or $Rewind -or $Pause -or $Resume -or $Toggle) { Register-Transport }
+
     if ($Stop) {
         $was = Get-SpeechStatus
         # killing the player is instant and needs no cooperation from it, which is
@@ -1340,8 +1563,22 @@ try {
     }
     elseif ($Latest) {
         $transcript = Get-LatestTranscript
-        $text = Select-Portion (Convert-ToSpeech (Get-LastAssistantText $transcript $MinReplayChars)) $ScopeManual $MaxCharsManual
-        Invoke-Speech (Add-SessionLabel (Get-SessionLabel $transcript) $text) 'manual'
+        if ($AutoReading) {
+            # The end of a turn, read in full because EndOfTurn says so. Nobody
+            # asked for this one, so mute applies, the microphone is waited out,
+            # and the newest message is the one read: it is the turn just ended,
+            # however short.
+            if (Test-SessionMuted $transcript) { exit 0 }
+            $text = Select-Portion (Convert-ToSpeech (Get-LastAssistantText $transcript 0)) 'full' $MaxCharsManual
+            Wait-ForMic
+            Invoke-Reading $text 'reading' (Get-SessionLabel $transcript)
+            # Narration that arrived while this was reading was held back by it,
+            # and nobody else is coming for it.
+            if (-not $Print) { Invoke-Drain }
+        } else {
+            $text = Select-Portion (Convert-ToSpeech (Get-LastAssistantText $transcript $MinReplayChars)) $ScopeManual $MaxCharsManual
+            Invoke-Reading $text 'manual' (Get-SessionLabel $transcript)
+        }
     }
     elseif ($Mode -eq 'notify') {
         $payload = Read-Payload
@@ -1369,6 +1606,9 @@ try {
         $payload = Read-Payload
         if (-not $payload) { exit 0 }
         $transcript = [string]$payload.transcript_path
+        # The session's own directory, which the payload names outright, beats
+        # the working directory this hook happened to start in.
+        if (-not $ProjectDir -and $payload.cwd) { Use-ProjectSettings ([string]$payload.cwd) }
         # a handover line, not the response - the response is played on request
         # with -Latest, which is what /speak with no arguments runs
         #
@@ -1377,8 +1617,33 @@ try {
         # the user the moment it was unmuted.
         $cue = Get-SessionCue $transcript
         if (Test-SessionMuted $transcript) { exit 0 }
-        if (-not $cue) { $cue = $FallbackCue }
-        $line = Add-SessionLabel (Get-SessionLabel $transcript) (Convert-ToSpeech $cue -Light)
+        $me = Get-SessionIdFor $transcript
+        $label = Get-SessionLabel $transcript
+
+        # A turn that only worked the controls - "continue", "pause", "stop" -
+        # ends with a one-word acknowledgement. Reading that out would replace
+        # the reading the listener just asked to continue, so it says nothing.
+        $newest = Get-LastAssistantText $transcript 0
+        if ((Test-RecentTransport) -and $newest.Length -lt $MinReplayChars) { exit 0 }
+
+        if ($EndOfTurn -eq 'full') {
+            $text = Select-Portion (Convert-ToSpeech $newest) 'full' $MaxCharsManual
+            if ($Print) { Invoke-Reading $text 'reading' $label; exit 0 }
+            # This window's narration is history once its answer is read; the
+            # reading itself replaces whatever is playing when it starts.
+            Clear-SessionNarration $me
+            $dir = if ($payload.cwd) { [string]$payload.cwd } else { (Get-Location).Path }
+            Start-DetachedReading $transcript $me $dir
+            exit 0
+        }
+
+        $spoken = ''
+        if ($EndOfTurn -eq 'gist') { $spoken = Select-Gist (Convert-ToSpeech $newest) }
+        if (-not $spoken) {
+            if (-not $cue) { $cue = $FallbackCue }
+            $spoken = Convert-ToSpeech $cue -Light
+        }
+        $line = Add-SessionLabel $label $spoken
         if ($Print) { Write-Output $line; exit 0 }
         # Queued rather than spoken outright. Speaking outright kills whatever is
         # playing, and with several windows open that is usually another window's
@@ -1386,7 +1651,6 @@ try {
         # looking. Dropping this session's own pending narration first is what
         # keeps the cue's meaning intact: within a window, the handover really
         # does supersede everything that window was in the middle of saying.
-        $me = Get-SessionIdFor $transcript
         Clear-SessionNarration $me
         Add-NarrationLine $line $me
         Invoke-Drain

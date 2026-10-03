@@ -239,12 +239,52 @@ does that, `hotkeys trace` will log nothing when you press them.
 
 A `SessionStart` hook tells the agent, once per session, to write one line to
 `~/.claude/agent-speak/speak-cues/<session_id>.txt` before finishing a turn. The
+hook reads the session id from its own payload and writes it into that path, so
+the agent knows exactly which file is its own. The
 `Stop` hook speaks that line, then deletes it — so a cue can never be replayed on
 a later turn. A turn that writes no cue is announced with a generic
 `Response ready.`
 
 A second file, `speak-labels/<session_id>.txt`, holds the session's name and is
 spoken first. Write it once; it lasts the session.
+
+## Hearing more than the cue
+
+`EndOfTurn` decides what you hear when a turn ends:
+
+| `EndOfTurn` | You hear |
+| --- | --- |
+| `cue` (default) | the one line the agent wrote for the purpose |
+| `gist` | the opening of the response: the first paragraph, plus more paragraphs until it reaches `GistMinWords` (60). It stops near `GistMaxWords` (120), at the end of a sentence. |
+| `full` | the whole response, up to `MaxCharsManual` characters |
+
+A full reading runs in a player of its own, so the hook's timeout can't cut it
+off. A newer turn's reading replaces it. A turn that only ran a playback control
+("continue", "pause", "stop") and replied in a word says nothing, so it doesn't
+replace the reading you just asked to continue.
+
+**Continue prompts.** Set `ContinueEveryParagraphs` to stop a full reading after
+that many paragraphs. It applies to both `EndOfTurn: full` and `play`. The
+reading asks "Continue?" (`ContinuePrompt`) and waits, paused. To read on, say
+"continue", run `tts resume`, or press ⏯. `stop` ends the reading. If nobody
+answers within `ContinueWaitSec` (600), it ends by itself.
+
+Every character read is billed, and `full` reads far more of them than a cue.
+
+## Per-project settings
+
+`Projects` gives a directory its own settings, keyed by an absolute path (either
+slash works). A value is a voice id, or an object using the same keys as the top
+level. The longest matching path wins, so a subdirectory inherits its repo's
+settings. Relative keys are ignored.
+
+```json
+"EndOfTurn": "gist",
+"Projects": {
+  "E:/repos/observatory": { "EndOfTurn": "full", "ContinueEveryParagraphs": 2 },
+  "E:/repos/portfolio": "XrExE9yKIg1WjnnlVkGX"
+}
+```
 
 ## Configuration
 
