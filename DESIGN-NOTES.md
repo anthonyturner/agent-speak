@@ -75,7 +75,7 @@ session so nothing is said twice. When no result has landed yet, the oldest
 un-announced call is a better guess than saying nothing — being a beat early
 about which of your own agents returned is a small error, and silence is not.
 
-### Narration queues; the cue still interrupts
+### Narration queues
 
 `Invoke-Speech` stops whatever is playing before it starts. That is right for one
 line at the end of a turn: the newest handover is the only one worth hearing.
@@ -92,15 +92,15 @@ Three details are load-bearing:
   between "queue is empty" and "lock released" is one nobody is coming back for:
   its own process already tried for the lock, failed and exited. Without the
   re-check that line waits for an unrelated future line to wake it.
-- **A stale lock is never trusted.** The end-of-turn cue kills whatever is
-  speaking — by design — and if that is the drainer, the lock outlives it. Left
+- **A stale lock is never trusted.** The drainer speaks in its own process, so
+  anything that kills the speaker (stop, a notification, a reading, mute, or the
+  Stop hook's timeout) can kill the drainer, and the lock outlives it. Left
   alone, narration would go silent from then on and stay silent.
 - **The queue is trimmed from the front.** A backlog means the listener is
   already behind, and what they want is the thought that just happened.
 
-The cue keeps interrupting, and that is the point rather than an oversight: when
-the turn ends, narration still in flight is stale, and clearing the decks for the
-handover is the right call.
+The cue used to interrupt here. It no longer does: it queues behind other
+windows and clears only its own window's pending lines (see "Cues queue" below).
 
 ### Mute is per session, and speaking is the default
 
@@ -179,6 +179,35 @@ Three smaller decisions:
 `diag` prints both halves — what would hold speech, and what is holding it right
 now — because "why has it gone quiet" is the question this feature invites, and
 guessing at it is miserable.
+
+### Holding for Jev: a marker that expires, not a pause
+
+Jev is a browser voice assistant in observatory. When both talk at once, neither
+is heard. Observatory could have pressed this plugin's pause, but `.tts.ctl` is
+the user's own pause. A resume sent for Jev would undo a pause the user set, and
+a writer that crashed would leave the agent paused for good.
+
+So Jev gets a pause source of its own. While Jev speaks, observatory keeps
+`.jev-speaking` = `<expiryUnixMs>|<token>` fresh, about 6 s ahead. This plugin
+only reads the file. A valid hold pauses the player the same way the user's
+pause does, and it lapses by itself. Four details matter:
+
+- **The marker fails toward talking.** A missing, garbled, expired or far-future
+  marker (more than 30 s ahead) means no hold. A stuck hold would look like a
+  broken plugin.
+- **The drainer waits before it takes a line.** If it waited after taking it, a
+  drainer killed during a long hold would lose that line. The line stays in the
+  queue instead, so mute, the queue cap and a cue can still drop it.
+- **Speech that would start during a hold starts paused.** Pausing it on the
+  next poll would let a fragment play first. The `SoundPlayer` fallback can only
+  wait before it starts, because it cannot pause.
+- **The Stop hook hands off.** A hold can outlast the hook's 180 s timeout, so a
+  cue queued during a hold is drained by a detached `-Drain`, launched the same
+  way as a full reading.
+
+The marker is opened with read, write and delete sharing, because the writer
+replaces it by rename and deletes it on release. `status` still reports only the
+user's pause. `diag` shows the hold.
 
 ### Media keys: a low-level hook, not `RegisterHotKey`
 
