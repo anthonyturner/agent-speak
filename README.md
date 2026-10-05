@@ -167,6 +167,16 @@ Holds for mic      : WisprFlow
 Microphone now     : HOLDING - C:\...\WisprFlow\app-1.6.897\Wispr Flow.exe
 ```
 
+### It waits while Jev is talking
+
+[Observatory](https://github.com/anthonyturner/observatory)'s voice assistant,
+Jev, marks when it is speaking by keeping `~/.claude/agent-speak/.jev-speaking`
+fresh. While that marker is valid, anything playing pauses and resumes from the
+same place, queued lines wait their turn, and new speech starts paused. Your own
+pause is never touched, so a pause you set stays set after Jev finishes. If
+observatory stops renewing the marker, speech carries on within about 6 seconds.
+`diag` shows `Held for Jev`; `status` reports only your own pause.
+
 ### Why it doesn't just read the thinking aloud
 
 The obvious version of this feature — narrate the model's reasoning — isn't
@@ -304,6 +314,7 @@ Everything lives in `~/.claude/agent-speak/`:
 | `speak-cues/`, `speak-labels/` | per-session copy |
 | `.tts.pid` | which process is playing |
 | `.tts.ctl`, `.tts.seek` | pause state and pending seek |
+| `.jev-speaking` | Jev's hold, written by observatory and only read here |
 | `queue/`, `.tts.drain.pid` | lines waiting to be spoken, and who is speaking them |
 | `speak-mute/` | which windows have asked for quiet |
 | `.spoken-agents/` | which subagent completions have been announced already |

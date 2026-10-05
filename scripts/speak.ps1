@@ -165,8 +165,9 @@ $MicWaitNotifySec = 30
 $MicPollMs       = 400
 
 # A drain lock whose owning process is gone is not a drain in progress, it is
-# wreckage - most likely the end-of-turn cue having killed the drainer mid-line.
-# Nothing may be spoken until it is cleared, so it is never simply trusted.
+# wreckage - a drainer killed mid-line by stop, a notification, a reading, or the
+# Stop hook's own timeout. Nothing may be spoken until it is cleared, so it is
+# never simply trusted.
 $DrainLockStaleSec  = 300
 
 $Rate      = 1           # SAPI5 only: -10 (slow) .. 10 (fast)
@@ -247,6 +248,16 @@ $transportFile = Join-Path $StateRoot '.tts.transport'
 $TransportQuietSec = 45
 $SeekStepMs     = 10000
 $PollMs         = 120
+# Jev, a separate browser voice assistant, says it is speaking by keeping this
+# marker fresh: one ASCII line, '<expiryUnixMs>|<token>'. Observatory writes it;
+# this script only ever reads it. While it is valid, speech holds - a second
+# pause source that lapses by itself, so a writer that dies cannot leave the
+# agent silent. It never touches .tts.ctl, which is the user's pause alone.
+$jevMarker = Join-Path $StateRoot '.jev-speaking'
+# An expiry further ahead than this is garbage, not a long hold.
+$JevHoldMaxAheadMs = 30000
+# How often a drainer or a reading waiting on a hold looks again.
+$JevPollMs = 300
 $voiceCacheFile = Join-Path $StateRoot '.tts-voices.json'
 $lastVoiceFile = Join-Path $StateRoot '.tts-lastvoice'
 # One file per line waiting to be spoken, named so that a plain sort is
@@ -608,6 +619,60 @@ function Get-ControlState {
     return 'play'
 }
 
+function Read-SharedLine([string]$path) {
+    # The first line of a file another process may be rewriting or deleting at
+    # the same moment, or '' when there is none. Opened with read, write and
+    # delete sharing, so this read never makes that writer's Set-Content,
+    # delete or rename fail - a poll that ran every few hundred milliseconds
+    # with plain read sharing would, now and then, and lose that write.
+    if (-not [System.IO.File]::Exists($path)) { return '' }
+    try {
+        $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+                                     ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+        $reader = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::ASCII)
+        try { return [string]$reader.ReadLine() } finally { $reader.Dispose() }
+    } catch { return '' }
+}
+
+function Test-JevHold {
+    # The one reader of the Jev marker. $null when there is no hold, otherwise
+    # the token (diagnostics only) and how long the hold has left. Missing,
+    # garbled, expired or far-future all mean no hold: failing toward talking
+    # is the safe direction, because a stuck hold looks like a broken plugin.
+    # The writer replaces the file by rename and deletes it on release, hence
+    # the shared read.
+    $line = Read-SharedLine $jevMarker
+    if ($line -notmatch '^\s*(\d{1,15})\|(.*)$') { return $null }
+    $left = [long]$Matches[1] - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    if ($left -le 0 -or $left -gt $JevHoldMaxAheadMs) { return $null }
+    return @{ Token = $Matches[2].Trim(); LeftMs = $left }
+}
+
+function Get-PlaybackState {
+    # What the player should be doing: the user's pause or a Jev hold both
+    # pause it. Only the first is ever written down, so a hold ending resumes
+    # speech without touching a pause the user set themselves.
+    if ((Get-ControlState) -eq 'pause') { return 'pause' }
+    if (Test-JevHold) { return 'pause' }
+    return 'play'
+}
+
+function Wait-PlaybackAllowed {
+    # Called just before audio starts, so speech that would begin during a hold
+    # - or after the user paused while it was being synthesised - begins paused
+    # rather than playing a fragment first.
+    while ((Get-PlaybackState) -eq 'pause') { Start-Sleep -Milliseconds $PollMs }
+}
+
+function Wait-ForJev([scriptblock]$Abandon = $null) {
+    # $true once no hold is valid; $false as soon as $Abandon says to stop.
+    while (Test-JevHold) {
+        if ($Abandon -and (& $Abandon)) { return $false }
+        Start-Sleep -Milliseconds $JevPollMs
+    }
+    return $true
+}
+
 function Set-ControlState([string]$state) {
     try { Set-Content -LiteralPath $ctlFile -Value $state -Encoding ascii -ErrorAction Stop } catch { }
 }
@@ -813,7 +878,9 @@ function Invoke-Wav([string]$wav) {
     $alias = "tts$PID"
     $open = Invoke-Mci ('open "' + $wav + '" type waveaudio alias ' + $alias)
     if ($open -like '*rror*') {
-        # MCI refused the file: a playback with no pause beats no playback at all
+        # MCI refused the file: a playback with no pause beats no playback at all.
+        # It can still wait for a hold before it starts, if not during one.
+        Wait-PlaybackAllowed
         $player = New-Object System.Media.SoundPlayer $wav
         try { $player.PlaySync() } finally { $player.Dispose() }
         return
@@ -824,6 +891,7 @@ function Invoke-Wav([string]$wav) {
         [void](Invoke-Mci "set $alias time format milliseconds")
         $length = 0
         try { $length = [int](Invoke-Mci "status $alias length") } catch { $length = 0 }
+        Wait-PlaybackAllowed
         [void](Invoke-Mci "play $alias")
         while ($true) {
             $mode = Invoke-Mci "status $alias mode"
@@ -841,12 +909,12 @@ function Invoke-Wav([string]$wav) {
                 [void](Invoke-Mci "play $alias from $target")
                 # 'play from' always resumes, so a seek made while paused would
                 # silently un-pause; put it back
-                if ((Get-ControlState) -eq 'pause') { [void](Invoke-Mci "pause $alias") }
+                if ((Get-PlaybackState) -eq 'pause') { [void](Invoke-Mci "pause $alias") }
                 Start-Sleep -Milliseconds $PollMs
                 continue
             }
 
-            $want = Get-ControlState
+            $want = Get-PlaybackState
             if ($want -eq 'pause' -and $mode -eq 'playing') { [void](Invoke-Mci "pause $alias") }
             elseif ($want -eq 'play' -and $mode -eq 'paused') { [void](Invoke-Mci "resume $alias") }
             Start-Sleep -Milliseconds $PollMs
@@ -865,9 +933,10 @@ function Invoke-Sapi([string]$text) {
         if ($VoiceName) { try { $synth.SelectVoice($VoiceName) } catch { } }
         # SpeakAsync rather than Speak, for the same reason the wav path uses MCI:
         # a blocking call cannot watch the control file while it runs
+        Wait-PlaybackAllowed
         [void]$synth.SpeakAsync($text)
         while ($synth.State -ne [System.Speech.Synthesis.SynthesizerState]::Ready) {
-            $want = Get-ControlState
+            $want = Get-PlaybackState
             if ($want -eq 'pause' -and $synth.State -eq [System.Speech.Synthesis.SynthesizerState]::Speaking) {
                 $synth.Pause()
             } elseif ($want -eq 'play' -and $synth.State -eq [System.Speech.Synthesis.SynthesizerState]::Paused) {
@@ -889,7 +958,9 @@ function Start-SpeechTurn([string]$Kind) {
     # a pause left over from the previous playback would start this one muted
     Clear-ControlState
     $me = Get-Process -Id $PID
-    Set-Content -LiteralPath $pidFile -Value "$PID|$($me.StartTime.Ticks)|$Kind" -Encoding ascii
+    # Not Set-Content: it refuses to write while anyone has the file open, and
+    # a drainer holding for Jev reads this one every few hundred milliseconds.
+    [System.IO.File]::WriteAllText($pidFile, "$PID|$($me.StartTime.Ticks)|$Kind")
 }
 
 function Stop-SpeechTurn {
@@ -973,19 +1044,25 @@ function Invoke-Reading([string]$text, [string]$Kind, [string]$label = '') {
     }
 }
 
-function Start-DetachedReading([string]$transcript, [string]$session, [string]$dir) {
-    # The Stop hook has a timeout, and a whole response read aloud - let alone
-    # one waiting on "Continue?" - outlasts it. So the hook hands the reading to
-    # a player of its own and returns. Start-Process launches through the shell,
-    # which is what lets the player outlive the hook's job object (see
+function Start-DetachedSpeak([string[]]$switches, [hashtable]$values) {
+    # The Stop hook has a timeout, and some speech outlasts it: a whole response
+    # read aloud, or a queue waiting out a Jev hold. So the hook hands it to a
+    # process of its own and returns. Start-Process launches through the shell,
+    # which is what lets that process outlive the hook's job object (see
     # runDetached in bin/agent-speak.js). -ArgumentList does no quoting of its
-    # own, so every value is quoted here.
+    # own, so every value is quoted here; empty values are left out.
     $quote = { param($v) '"' + ([string]$v).Replace('"', '') + '"' }
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (& $quote $PSCommandPath),
-                 '-Latest', '-AutoReading', '-Transcript', (& $quote $transcript))
-    if ($session) { $argList += @('-SessionId', (& $quote $session)) }
-    if ($dir) { $argList += @('-ProjectDir', (& $quote $dir)) }
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (& $quote $PSCommandPath)) + $switches
+    foreach ($name in $values.Keys) {
+        if ($values[$name]) { $argList += @("-$name", (& $quote $values[$name])) }
+    }
     Start-Process -FilePath 'powershell' -ArgumentList $argList -WindowStyle Hidden
+}
+
+function Start-DetachedReading([string]$transcript, [string]$session, [string]$dir) {
+    # A whole response read aloud - let alone one waiting on "Continue?" -
+    # outlasts the hook.
+    Start-DetachedSpeak @('-Latest', '-AutoReading') @{ Transcript = $transcript; SessionId = $session; ProjectDir = $dir }
 }
 
 # ------------------------------------------------------------- narration ----
@@ -1088,9 +1165,10 @@ function Clear-SessionNarration([string]$owner) {
 }
 
 function Clear-StaleDrainLock {
-    # A lock is only meaningful while its owner is alive. The end-of-turn cue
-    # kills whatever is speaking - by design - and if that is the drainer, the
-    # lock outlives it. Left alone, narration would be silent from then on.
+    # A lock is only meaningful while its owner is alive. The drainer speaks in
+    # its own process, so anything that kills the speaker - stop, a
+    # notification, a reading, mute, or the Stop hook's timeout - can kill it,
+    # and the lock outlives it. Left alone, narration would be silent from then on.
     if (-not (Test-Path -LiteralPath $drainLock)) { return }
     $alive = $false
     try {
@@ -1125,6 +1203,17 @@ function Get-DrainLock {
     }
 }
 
+function Test-NarrationOutranked {
+    # A reading outranks narration, whether the user asked for it or EndOfTurn
+    # 'full' started it. The kind is in the lock's own text, so anything else is
+    # ruled out without Get-ActiveSpeech, whose process probe is too slow to
+    # run on every poll of a hold.
+    $stamp = (Read-SharedLine $pidFile).Trim()
+    if ($stamp -notmatch '\|(manual|reading)$') { return $false }
+    $active = Get-ActiveSpeech
+    return [bool]($active -and ($active.Kind -eq 'manual' -or $active.Kind -eq 'reading'))
+}
+
 function Test-QueueEmpty {
     $waiting = @(Get-ChildItem -LiteralPath $QueueRoot -Filter *.txt -File -ErrorAction SilentlyContinue)
     return ($waiting.Count -eq 0)
@@ -1149,11 +1238,14 @@ function Invoke-DrainOnce {
     if (-not $lock) { return $false }
     try {
         while ($true) {
-            # A reading outranks narration, whether the user asked for it or
-            # EndOfTurn 'full' started it. Stop rather than drop: the next queued
-            # line, or the reading ending, starts a fresh drainer.
-            $active = Get-ActiveSpeech
-            if ($active -and ($active.Kind -eq 'manual' -or $active.Kind -eq 'reading')) { break }
+            # Stop rather than drop: the next queued line, or the reading
+            # ending, starts a fresh drainer.
+            if (Test-NarrationOutranked) { break }
+            if (Test-QueueEmpty) { break }
+            # Jev is speaking. Waited out before the line is taken, so it stays
+            # queued: a drainer killed while waiting loses nothing, and mute or
+            # a cue can still drop it from the queue meanwhile.
+            if (-not (Wait-ForJev { Test-NarrationOutranked })) { break }
 
             $next = @(Get-ChildItem -LiteralPath $QueueRoot -Filter *.txt -File -ErrorAction SilentlyContinue |
                       Sort-Object Name | Select-Object -First 1)
@@ -1392,6 +1484,8 @@ function Show-Diag {
     } else {
         Write-Output "Holds for mic      : off"
     }
+    $jev = Test-JevHold
+    Write-Output "Held for Jev       : $(if ($jev) { 'HOLDING - {0}s left, token {1}' -f [math]::Ceiling($jev.LeftMs / 1000), $jev.Token } else { 'no' })"
     if (-not $ready) { return }
 
     # /v1/voices needs only the Voices read permission, so it is the honest test
@@ -1545,7 +1639,9 @@ try {
     # queue to a drainer and gets out. -Print still shows the line and speaks
     # nothing, which is how a narration hook is debugged in a quiet room.
     if ($Queue -or $Drain) {
-        if (-not $SpeakNarration) { exit 0 }
+        # Narration off stops new lines, never a drain: the end-of-turn cue goes
+        # through the queue too, and may be handed to a detached -Drain.
+        if ($Queue -and -not $SpeakNarration) { exit 0 }
         # Checked before queueing, not at the front of the queue: a muted window
         # has no business putting anything into a queue shared with the windows
         # that are still talking.
@@ -1582,6 +1678,7 @@ try {
             if (Test-SessionMuted $transcript) { exit 0 }
             $text = Select-Portion (Convert-ToSpeech (Get-LastAssistantText $transcript 0)) 'full' $MaxCharsManual
             Wait-ForMic
+            [void](Wait-ForJev)
             Invoke-Reading $text 'reading' (Get-SessionLabel $transcript)
             # Narration that arrived while this was reading was held back by it,
             # and nobody else is coming for it.
@@ -1665,7 +1762,14 @@ try {
         # does supersede everything that window was in the middle of saying.
         Clear-SessionNarration $me
         Add-NarrationLine $line $me
-        Invoke-Drain
+        # Jev is speaking, and the hold may outlast the hook's timeout. A
+        # drainer of its own waits it out instead, with the cue still queued.
+        if (Test-JevHold) {
+            $dir = if ($payload.cwd) { [string]$payload.cwd } else { (Get-Location).Path }
+            Start-DetachedSpeak @('-Drain') @{ ProjectDir = $dir }
+        } else {
+            Invoke-Drain
+        }
     }
 } catch {
     # A speech failure must never break the turn, so this still swallows the
