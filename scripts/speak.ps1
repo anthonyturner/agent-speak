@@ -619,23 +619,29 @@ function Get-ControlState {
     return 'play'
 }
 
+function Read-SharedLine([string]$path) {
+    # The first line of a file another process may be rewriting or deleting at
+    # the same moment, or '' when there is none. Opened with read, write and
+    # delete sharing, so this read never makes that writer's Set-Content,
+    # delete or rename fail - a poll that ran every few hundred milliseconds
+    # with plain read sharing would, now and then, and lose that write.
+    if (-not [System.IO.File]::Exists($path)) { return '' }
+    try {
+        $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+                                     ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+        $reader = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::ASCII)
+        try { return [string]$reader.ReadLine() } finally { $reader.Dispose() }
+    } catch { return '' }
+}
+
 function Test-JevHold {
     # The one reader of the Jev marker. $null when there is no hold, otherwise
     # the token (diagnostics only) and how long the hold has left. Missing,
     # garbled, expired or far-future all mean no hold: failing toward talking
     # is the safe direction, because a stuck hold looks like a broken plugin.
-    #
-    # Opened with read, write and delete sharing: the writer replaces the file
-    # by rename and deletes it on release, and a reader holding it without
-    # delete sharing would make either fail.
-    if (-not [System.IO.File]::Exists($jevMarker)) { return $null }
-    $line = ''
-    try {
-        $fs = [System.IO.File]::Open($jevMarker, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
-                                     ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
-        $reader = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::ASCII)
-        try { $line = $reader.ReadLine() } finally { $reader.Dispose() }
-    } catch { return $null }
+    # The writer replaces the file by rename and deletes it on release, hence
+    # the shared read.
+    $line = Read-SharedLine $jevMarker
     if ($line -notmatch '^\s*(\d{1,15})\|(.*)$') { return $null }
     $left = [long]$Matches[1] - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     if ($left -le 0 -or $left -gt $JevHoldMaxAheadMs) { return $null }
@@ -952,7 +958,9 @@ function Start-SpeechTurn([string]$Kind) {
     # a pause left over from the previous playback would start this one muted
     Clear-ControlState
     $me = Get-Process -Id $PID
-    Set-Content -LiteralPath $pidFile -Value "$PID|$($me.StartTime.Ticks)|$Kind" -Encoding ascii
+    # Not Set-Content: it refuses to write while anyone has the file open, and
+    # a drainer holding for Jev reads this one every few hundred milliseconds.
+    [System.IO.File]::WriteAllText($pidFile, "$PID|$($me.StartTime.Ticks)|$Kind")
 }
 
 function Stop-SpeechTurn {
@@ -1200,8 +1208,7 @@ function Test-NarrationOutranked {
     # 'full' started it. The kind is in the lock's own text, so anything else is
     # ruled out without Get-ActiveSpeech, whose process probe is too slow to
     # run on every poll of a hold.
-    $stamp = ''
-    try { $stamp = [System.IO.File]::ReadAllText($pidFile).Trim() } catch { return $false }
+    $stamp = (Read-SharedLine $pidFile).Trim()
     if ($stamp -notmatch '\|(manual|reading)$') { return $false }
     $active = Get-ActiveSpeech
     return [bool]($active -and ($active.Kind -eq 'manual' -or $active.Kind -eq 'reading'))
