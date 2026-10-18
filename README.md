@@ -263,6 +263,7 @@ avoid.
 | `/agent-speak:tts pause` | pause, resume, stop, skip, or report status |
 | `/agent-speak:tts mute` | silence this window until you unmute it |
 | `/agent-speak:tts mute project` | silence every window of this project, including new ones |
+| `/agent-speak:tts brief` / `full` | hear just the headline, or the whole response, at the end of each turn |
 | `/agent-speak:speak <text>` | speak a specific piece of text |
 
 And one the agent calls itself, mid-turn:
@@ -335,6 +336,22 @@ spoken first. Write it once; it lasts the session.
 | `gist` | the opening of the response: the first paragraph, plus more paragraphs until it reaches `GistMinWords` (60). It stops near `GistMaxWords` (120), at the end of a sentence. |
 | `full` | the whole response, up to `MaxCharsManual` characters |
 
+**Switching on the fly.** Stepping away to another screen, you may want just the
+headline, and the full reading again when you're back. You don't have to edit the
+config for that:
+
+```
+/agent-speak:tts brief          →  brief (switched)    one line per turn
+/agent-speak:tts full           →  full (switched)     the whole response
+/agent-speak:tts length toggle  →  flips between brief and full
+/agent-speak:tts length auto    →  back to what config.json says
+```
+
+Bare phrases work too: "keep it short", "read everything", "back to normal". The
+switch outranks config.json, per-project settings included, in every window, and
+it lasts until you change it or set it back to `auto`. It's stored in
+`end-of-turn.txt`. `doctor` shows the length in effect.
+
 A full reading runs in a player of its own, so the hook's timeout can't cut it
 off. A newer turn's reading replaces it. A turn that only ran a playback control
 ("continue", "pause", "stop") and replied in a word says nothing, so it doesn't
@@ -385,6 +402,7 @@ Everything lives in `~/.claude/agent-speak/`:
 | `queue/`, `.tts.drain.pid` | lines waiting to be spoken, and who is speaking them |
 | `speak-mute/` | which windows have asked for quiet |
 | `speak-mute-projects/` | which projects have asked for quiet |
+| `end-of-turn.txt` | the brief/gist/full switch, when one is set |
 | `.spoken-agents/` | which subagent completions have been announced already |
 | `errors.log` | failures the script swallowed rather than break your turn |
 
