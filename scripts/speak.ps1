@@ -65,6 +65,9 @@ param(
     [switch]$Forward,
     [switch]$Rewind,
     [int]$StepMs = 0,
+    # How much the end of a turn reads, set from outside config.json: brief, gist,
+    # full, toggle, auto (back to config), or status. See Use-EndOfTurnSwitch.
+    [string]$TurnLength = '',
     # Used by the detached reading the Stop hook starts when EndOfTurn is 'full':
     # it already knows the transcript and the project, so neither is guessed.
     # -AutoReading marks the reading as one nobody asked for, so mute applies
@@ -306,8 +309,8 @@ function ConvertTo-ComparablePath([string]$p) {
     return ($p -replace '\\', '/').TrimEnd('/').ToLowerInvariant()
 }
 
-function Use-ProjectSettings([string]$dir) {
-    if (-not $Projects -or -not $dir) { return }
+function Find-ProjectSettings([string]$dir) {
+    if (-not $Projects -or -not $dir) { return $null }
     $here = ConvertTo-ComparablePath $dir
     $best = $null
     $bestLength = -1
@@ -320,17 +323,44 @@ function Use-ProjectSettings([string]$dir) {
             $bestLength = $key.Length
         }
     }
-    if ($null -eq $best) { return }
+    return $best
+}
+
+# The end-of-turn switch: one word in a file, set by `agent-speak length`. It
+# outranks config.json and every project's EndOfTurn, because it says where the
+# user is right now - away at another screen wants the headline, wherever the
+# turn ended - and a project's preference cannot know that.
+$lengthFile = Join-Path $StateRoot 'end-of-turn.txt'
+$EndOfTurnLengths = @('cue', 'gist', 'full')
+
+function Get-EndOfTurnSwitch {
+    try {
+        $v = ([string](Get-Content -LiteralPath $lengthFile -TotalCount 1 -ErrorAction Stop)).Trim()
+        if ($EndOfTurnLengths -contains $v) { return $v }
+    } catch { }
+    return ''
+}
+
+function Use-ProjectSettings([string]$dir) {
+    # The hook calls this a second time once it knows the session's real cwd, and
+    # that pass must not inherit the switch the first one applied.
+    if ($null -eq $script:EndOfTurnConfig) { $script:EndOfTurnConfig = $EndOfTurn }
+    $script:EndOfTurn = $EndOfTurnConfig
+    $best = Find-ProjectSettings $dir
     if ($best -is [string]) {
         Set-Variable -Name 'ElevenVoiceId' -Value $best -Scope Script
-        return
-    }
-    foreach ($prop in $best.PSObject.Properties) {
-        if ($prop.Name -eq 'Projects') { continue }
-        if (Get-Variable -Name $prop.Name -Scope Script -ErrorAction SilentlyContinue) {
-            Set-Variable -Name $prop.Name -Value $prop.Value -Scope Script
+    } elseif ($null -ne $best) {
+        foreach ($prop in $best.PSObject.Properties) {
+            if ($prop.Name -eq 'Projects') { continue }
+            if (Get-Variable -Name $prop.Name -Scope Script -ErrorAction SilentlyContinue) {
+                Set-Variable -Name $prop.Name -Value $prop.Value -Scope Script
+            }
         }
     }
+    # Kept so `length auto` can say what it went back to.
+    $script:EndOfTurnFromSettings = $EndOfTurn
+    $switch = Get-EndOfTurnSwitch
+    if ($switch) { $script:EndOfTurn = $switch }
 }
 
 try {
@@ -1484,6 +1514,36 @@ function Invoke-VoicePreview([string]$query) {
     Invoke-Speech ('This is {0}. Your agent will sound like this.' -f $picked.name) 'manual'
 }
 
+function Format-EndOfTurn {
+    # 'cue' is the internal name; the person flipping the switch said "brief".
+    $word = if ($EndOfTurn -eq 'cue') { 'brief' } else { $EndOfTurn }
+    if (Get-EndOfTurnSwitch) { return "$word (switched; auto goes back to your settings)" }
+    return "$word (from your settings)"
+}
+
+function Use-EndOfTurnSwitch([string]$want) {
+    $want = $want.Trim().ToLowerInvariant()
+    $named = @{ brief = 'cue'; short = 'cue'; headline = 'cue'; cue = 'cue'; gist = 'gist'; full = 'full'; all = 'full' }
+    if ($want -eq 'toggle') {
+        $want = if ($EndOfTurn -eq 'cue') { 'full' } else { 'cue' }
+    } elseif ($named.ContainsKey($want)) {
+        $want = $named[$want]
+    } elseif (@('auto', 'default', 'reset') -contains $want) {
+        Remove-Item -LiteralPath $lengthFile -Force -ErrorAction SilentlyContinue
+        $script:EndOfTurn = $EndOfTurnFromSettings
+        Write-Output (Format-EndOfTurn)
+        return
+    } elseif ($want -ne 'status') {
+        Write-Output "unknown length '$want': brief, gist, full, toggle, auto or status"
+        return
+    }
+    if ($want -ne 'status') {
+        Set-Content -LiteralPath $lengthFile -Value $want -Encoding ASCII
+        $script:EndOfTurn = $want
+    }
+    Write-Output (Format-EndOfTurn)
+}
+
 function Show-Diag {
     $key = Get-ElevenKey
     $voices = @()
@@ -1510,6 +1570,7 @@ function Show-Diag {
     Write-Output "Voice selection    : $picking"
     Write-Output "Default voice id   : $voiceState"
     Write-Output "Model / format     : $ElevenModel / $ElevenFormat"
+    Write-Output "End of turn        : $(Format-EndOfTurn)"
     Write-Output "Engine in use      : $(if ($ready) { 'ElevenLabs, with SAPI5 on any failure' } else { 'SAPI5 - ElevenLabs not configured' })"
     Write-Output "SAPI5 voices       : $($voices -join ', ')"
 
@@ -1605,6 +1666,8 @@ try {
     # These act on a playback already in flight, so they run before anything that
     # reads stdin or a transcript and they never speak anything themselves.
     if ($Status) { Write-Output (Get-SpeechStatus); exit 0 }
+
+    if ($TurnLength) { Use-EndOfTurnSwitch $TurnLength; exit 0 }
 
     # -- per-session quiet ----------------------------------------------------
     if ($Mute -or $Unmute -or $MuteStatus) {

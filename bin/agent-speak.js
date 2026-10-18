@@ -215,6 +215,7 @@ const USAGE = {
   ].join('\n'),
   unmute: 'agent-speak unmute <session_id> [--project]',
   'mute-status': 'agent-speak mute-status <session_id>',
+  length: 'agent-speak length [brief|gist|full|toggle|auto]',
 };
 
 const KNOWN_OPTIONS = {
@@ -234,6 +235,7 @@ const TOP_LEVEL_USAGE = [
   '  voice <list|set|preview> [name or id]',
   '  mute|unmute <session_id> [--project]',
   '  mute-status <session_id>',
+  '  length [brief|gist|full|toggle|auto]   how much a finished turn reads',
   '  stop|pause|resume|toggle|status|forward|rewind',
   '  hotkeys|diag',
   '',
@@ -591,6 +593,13 @@ function main() {
       const args = [flag, '-SessionId', id];
       if (rest.includes('--project')) args.push('-Project');
       runPowerShell(SPEAK, args);
+      return;
+    }
+
+    // -- end-of-turn length --------------------------------------------------
+    case 'length': {
+      if (wantsHelp(rest)) usage('length');
+      runPowerShell(SPEAK, ['-TurnLength', rest[0] || 'status']);
       return;
     }
 

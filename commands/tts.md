@@ -1,6 +1,6 @@
 ---
-description: Stop, pause, resume, mute this window or project, or check the speech playing right now
-argument-hint: "stop | pause | resume | toggle | status | mute [project] | unmute [project]"
+description: Stop, pause, resume, mute this window or project, switch between a brief headline and the full reading, or check the speech playing right now
+argument-hint: "stop | pause | resume | toggle | status | mute [project] | unmute [project] | brief | full | length toggle"
 allowed-tools: Bash(node:*)
 ---
 
@@ -73,6 +73,30 @@ covers what the plugin says uninvited.
 
 Nothing is banked while muted. Cues are consumed and discarded as they arrive, so
 unmuting does not empty an hour of handovers over the user.
+
+## How much a finished turn reads
+
+The end of a turn reads one of three lengths: **brief** (the one-line headline),
+**gist** (the opening paragraphs) or **full** (the whole response). Settings pick
+it per project; this switch overrides them all, in every window, until it is set
+back to `auto`.
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/bin/agent-speak.js" length <brief|gist|full|toggle|auto>
+```
+
+| Said | Subcommand | The script prints |
+| --- | --- | --- |
+| `brief`, `keep it short`, `just the headline`, `I'm away from the screen` | `length brief` | `brief (switched; ...)` |
+| `full`, `read everything`, `read the whole thing` | `length full` | `full (switched; ...)` |
+| `gist`, `just the opening` | `length gist` | `gist (switched; ...)` |
+| `switch length`, `toggle length`, `toggle brief` | `length toggle` | `full` from brief, `brief` from anything else |
+| `back to normal`, `use my settings` | `length auto` | the length the settings give, `(from your settings)` |
+| `how long are readings`, `what length` | `length` | the current length and where it comes from |
+
+A bare `toggle` is still pause/play. Only `toggle` with "length" or "brief" in it
+is this switch. It changes the next turn's reading, not the one playing now; if
+the user wants that one gone too, run `stop` as well.
 
 **Treat the bare words as this command even without the slash.** "Stop talking",
 "pause that", "shut up", "keep going" are this command, not an invitation to
