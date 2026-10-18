@@ -1646,6 +1646,8 @@ try {
         exit 0
     }
 
+    if ($Stop -or $Forward -or $Rewind -or $Pause -or $Resume -or $Toggle) { Register-Transport }
+
     if ($Stop) {
         $was = Get-SpeechStatus
         # killing the player is instant and needs no cooperation from it, which is
