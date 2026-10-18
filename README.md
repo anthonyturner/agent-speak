@@ -67,6 +67,50 @@ Then check it:
 the key and voice are configured, and how much quota is left. It never prints
 the key.
 
+Whenever ElevenLabs can't speak — no key, no network, or credits run out (the
+API answers 402) — speech drops back to the built-in voice without saying why.
+If your key lacks the User read permission, `diag` can't show the quota either,
+so the robotic voice is the first sign you've run out. You can make that
+fallback sound natural too:
+
+### Better fallback voice
+
+On Windows 11, the free and open-source
+[NaturalVoiceSAPIAdapter](https://github.com/gexgd0419/NaturalVoiceSAPIAdapter/releases)
+makes Microsoft's natural voices available to the built-in speech engine, which
+is what the fallback uses.
+
+1. Download the installer from that releases page, run it and click
+   **Install 64-bit**. Leave **Local voice path** empty: on Windows 11 that box
+   isn't needed (it's for hand-unpacked voice packs on older Windows).
+2. Run `diag`. The `SAPI5 voices` line should now list voices such as
+   `Microsoft Ava Online`, `Microsoft Andrew Online`, `Microsoft Aria Online`,
+   `Microsoft Jenny Online` and `Microsoft Guy Online`.
+3. Put one of those names in `~/.claude/agent-speak/config.json`:
+
+   ```json
+   { "VoiceName": "Microsoft Ava Online" }
+   ```
+
+Know the trade-offs before you rely on it:
+
+- **The online voices need internet.** They're Microsoft Edge's online voices:
+  free, with no key, but not offline. ElevenLabs needs internet as well, so the
+  fallback still covers the common case (credits running out), but with no
+  network at all the online voice can't speak either.
+- **Only some languages are listed.** By default the adapter offers voices for
+  your Windows languages plus US English. **Change...** in its installer widens
+  that.
+- **Local Narrator voices may not show up.** Windows can download natural
+  voices for Narrator (Settings > Accessibility > Narrator > Add natural
+  voices), but newer versions of those voices no longer work through the
+  adapter, so don't count on them appearing in the list.
+- **Copy the name exactly.** A `VoiceName` that doesn't match an installed voice
+  is ignored, and you get the default voice with no error.
+- **Get it only from the official gexgd0419 GitHub page.** It installs a
+  system-wide speech component (a COM server that every app's speech engine
+  loads), so a copy from anywhere else isn't worth the risk.
+
 ## Talking while it works
 
 The cue is the end of the turn. Two things speak *during* one.
