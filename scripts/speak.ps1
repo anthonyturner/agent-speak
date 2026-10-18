@@ -930,6 +930,112 @@ function Request-ElevenWav([string]$text, [string]$voiceId) {
     }
 }
 
+# Windows saves one mixer level per executable, and an app that ducks others while
+# it records can leave powershell.exe saved at 0, which silences every later
+# playback. Mute is agent-speak's own switch, so the mixer is kept at full.
+function Write-ErrorLog([string]$message) {
+    try {
+        Add-Content -LiteralPath $errorLog -Value ('{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $message) -Encoding UTF8 -ErrorAction SilentlyContinue
+        # keep the log from growing without limit
+        $existing = @(Get-Content -LiteralPath $errorLog -ErrorAction SilentlyContinue)
+        if ($existing.Count -gt 200) {
+            Set-Content -LiteralPath $errorLog -Value ($existing | Select-Object -Last 100) -Encoding UTF8 -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+
+$script:CoreAudioReady = $false
+function Initialize-CoreAudio {
+    if ($script:CoreAudioReady) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace Tts {
+  [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMMDeviceEnumerator { [PreserveSig] int EnumAudioEndpoints(int dataFlow, int stateMask, out IMMDeviceCollection devices); }
+  [Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMMDeviceCollection { [PreserveSig] int GetCount(out int count); [PreserveSig] int Item(int index, out IMMDevice device); }
+  [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMMDevice { [PreserveSig] int Activate(ref Guid iid, int clsCtx, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object iface); }
+  [Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IAudioSessionManager2 { int GetAudioSessionControl(); int GetSimpleAudioVolume(); [PreserveSig] int GetSessionEnumerator(out IAudioSessionEnumerator sessions); }
+  [Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IAudioSessionEnumerator { [PreserveSig] int GetCount(out int count); [PreserveSig] int GetSession(int index, out IAudioSessionControl2 session); }
+  [Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IAudioSessionControl2 {
+    int GetState(); int GetDisplayName(); int SetDisplayName(); int GetIconPath(); int SetIconPath();
+    int GetGroupingParam(); int SetGroupingParam(); int RegisterAudioSessionNotification(); int UnregisterAudioSessionNotification();
+    int GetSessionIdentifier(); int GetSessionInstanceIdentifier();
+    [PreserveSig] int GetProcessId(out uint pid);
+  }
+  [Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface ISimpleAudioVolume {
+    [PreserveSig] int SetMasterVolume(float level, ref Guid context); [PreserveSig] int GetMasterVolume(out float level);
+    [PreserveSig] int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, ref Guid context); [PreserveSig] int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
+  }
+  [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumerator { }
+
+  public static class SessionVolume {
+    // Sets every audio session owned by pid, on every active output device, to full and
+    // unmuted. Returns how many it found: 0 means Windows has not created one yet.
+    public static int SetFull(uint pid) {
+      var devices = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+      IMMDeviceCollection collection;
+      Marshal.ThrowExceptionForHR(devices.EnumAudioEndpoints(0, 1, out collection));
+      int deviceCount; Marshal.ThrowExceptionForHR(collection.GetCount(out deviceCount));
+      int found = 0;
+      Guid managerId = typeof(IAudioSessionManager2).GUID;
+      Guid noContext = Guid.Empty;
+      for (int d = 0; d < deviceCount; d++) {
+        IMMDevice device; Marshal.ThrowExceptionForHR(collection.Item(d, out device));
+        object manager;
+        if (device.Activate(ref managerId, 23, IntPtr.Zero, out manager) != 0) continue;
+        IAudioSessionEnumerator sessions;
+        if (((IAudioSessionManager2)manager).GetSessionEnumerator(out sessions) != 0) continue;
+        int sessionCount; Marshal.ThrowExceptionForHR(sessions.GetCount(out sessionCount));
+        for (int s = 0; s < sessionCount; s++) {
+          IAudioSessionControl2 session; Marshal.ThrowExceptionForHR(sessions.GetSession(s, out session));
+          uint owner;
+          if (session.GetProcessId(out owner) != 0 || owner != pid) continue;
+          var volume = (ISimpleAudioVolume)session;
+          Marshal.ThrowExceptionForHR(volume.SetMasterVolume(1f, ref noContext));
+          Marshal.ThrowExceptionForHR(volume.SetMute(false, ref noContext));
+          found++;
+        }
+      }
+      return found;
+    }
+  }
+}
+'@
+    $script:CoreAudioReady = $true
+}
+
+# Windows creates a process's mixer entry only once its audio starts, so the reset
+# is retried on the playback loop's ticks. The C# is compiled before playback, since
+# Add-Type runs the compiler as its own process and would otherwise delay the reset.
+$script:VolumeDeadline = [datetime]::MinValue
+function Start-VolumeRestore {
+    $script:VolumeDeadline = [datetime]::MinValue
+    try { Initialize-CoreAudio } catch { Write-ErrorLog "Could not reset the mixer volume: $($_.Exception.Message)"; return }
+    $script:VolumeDeadline = (Get-Date).AddSeconds(2)
+}
+
+function Step-VolumeRestore {
+    if ($script:VolumeDeadline -eq [datetime]::MinValue) { return }
+    if ((Get-Date) -gt $script:VolumeDeadline) {
+        $script:VolumeDeadline = [datetime]::MinValue
+        Write-ErrorLog 'Could not reset the mixer volume: no audio session appeared for this process'
+        return
+    }
+    try {
+        if ([Tts.SessionVolume]::SetFull([uint32]$PID) -gt 0) { $script:VolumeDeadline = [datetime]::MinValue }
+    } catch {
+        $script:VolumeDeadline = [datetime]::MinValue
+        Write-ErrorLog "Could not reset the mixer volume: $($_.Exception.Message)"
+    }
+}
+
 function Invoke-Wav([string]$wav) {
     # the alias carries the PID so two overlapping runs cannot fight over one name
     $alias = "tts$PID"
@@ -949,8 +1055,10 @@ function Invoke-Wav([string]$wav) {
         $length = 0
         try { $length = [int](Invoke-Mci "status $alias length") } catch { $length = 0 }
         Wait-PlaybackAllowed
+        Start-VolumeRestore
         [void](Invoke-Mci "play $alias")
         while ($true) {
+            Step-VolumeRestore
             $mode = Invoke-Mci "status $alias mode"
             if ($mode -ne 'playing' -and $mode -ne 'paused') { break }
 
@@ -991,8 +1099,10 @@ function Invoke-Sapi([string]$text) {
         # SpeakAsync rather than Speak, for the same reason the wav path uses MCI:
         # a blocking call cannot watch the control file while it runs
         Wait-PlaybackAllowed
+        Start-VolumeRestore
         [void]$synth.SpeakAsync($text)
         while ($synth.State -ne [System.Speech.Synthesis.SynthesizerState]::Ready) {
+            Step-VolumeRestore
             $want = Get-PlaybackState
             if ($want -eq 'pause' -and $synth.State -eq [System.Speech.Synthesis.SynthesizerState]::Speaking) {
                 $synth.Pause()
@@ -1890,15 +2000,6 @@ try {
     # A speech failure must never break the turn, so this still swallows the
     # error - but silently swallowing it left anyone debugging on their own
     # machine with nothing whatsoever to look at. Now it leaves a trail.
-    try {
-        $line = '{0}  {1}  {2}:{3}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $_.Exception.Message,
-                                       $_.InvocationInfo.ScriptName, $_.InvocationInfo.ScriptLineNumber
-        Add-Content -LiteralPath $errorLog -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
-        # keep the log from growing without limit
-        $existing = @(Get-Content -LiteralPath $errorLog -ErrorAction SilentlyContinue)
-        if ($existing.Count -gt 200) {
-            Set-Content -LiteralPath $errorLog -Value ($existing | Select-Object -Last 100) -Encoding UTF8 -ErrorAction SilentlyContinue
-        }
-    } catch { }
+    Write-ErrorLog ('{0}  {1}:{2}' -f $_.Exception.Message, $_.InvocationInfo.ScriptName, $_.InvocationInfo.ScriptLineNumber)
 }
 exit 0
