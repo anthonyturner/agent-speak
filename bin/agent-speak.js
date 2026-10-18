@@ -224,6 +224,7 @@ const KNOWN_OPTIONS = {
   mute: new Set(['--project']),
   unmute: new Set(['--project']),
   'mute-status': new Set([]),
+  length: new Set([]),
 };
 
 const TOP_LEVEL_USAGE = [
@@ -599,6 +600,7 @@ function main() {
     // -- end-of-turn length --------------------------------------------------
     case 'length': {
       if (wantsHelp(rest)) usage('length');
+      rejectUnknownOptions('length', rest);
       runPowerShell(SPEAK, ['-TurnLength', rest[0] || 'status']);
       return;
     }

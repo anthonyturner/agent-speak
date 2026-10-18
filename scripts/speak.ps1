@@ -1535,7 +1535,7 @@ function Use-EndOfTurnSwitch([string]$want) {
         return
     } elseif ($want -ne 'status') {
         Write-Output "unknown length '$want': brief, gist, full, toggle, auto or status"
-        return
+        exit 2
     }
     if ($want -ne 'status') {
         Set-Content -LiteralPath $lengthFile -Value $want -Encoding ASCII

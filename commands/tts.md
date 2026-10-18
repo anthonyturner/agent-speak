@@ -4,9 +4,10 @@ argument-hint: "stop | pause | resume | toggle | status | mute [project] | unmut
 allowed-tools: Bash(node:*)
 ---
 
-Transport controls for speech that is already playing. Side-effect only: run it,
-reply with a single short line, nothing else. It never speaks anything itself and
-never starts a playback - that is `/agent-speak:play`.
+Controls for speech that is already playing, plus the mute and length settings
+that shape what is said next. Side-effect only: run it, reply with a single short
+line, nothing else. It never speaks anything itself and never starts a playback -
+that is `/agent-speak:play`.
 
 Arguments: $ARGUMENTS
 
@@ -88,14 +89,14 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/agent-speak.js" length <brief|gist|full|toggle|a
 | Said | Subcommand | The script prints |
 | --- | --- | --- |
 | `brief`, `keep it short`, `just the headline`, `I'm away from the screen` | `length brief` | `brief (switched; ...)` |
-| `full`, `read everything`, `read the whole thing` | `length full` | `full (switched; ...)` |
+| `full`, `read everything from now on`, `full readings` | `length full` | `full (switched; ...)` |
 | `gist`, `just the opening` | `length gist` | `gist (switched; ...)` |
-| `switch length`, `toggle length`, `toggle brief` | `length toggle` | `full` from brief, `brief` from anything else |
+| `switch length`, `toggle length`, `toggle brief`, `toggle full`, `toggle gist` | `length toggle` | `full` from brief, `brief` from anything else |
 | `back to normal`, `use my settings` | `length auto` | the length the settings give, `(from your settings)` |
 | `how long are readings`, `what length` | `length` | the current length and where it comes from |
 
-A bare `toggle` is still pause/play. Only `toggle` with "length" or "brief" in it
-is this switch. It changes the next turn's reading, not the one playing now; if
+A bare `toggle` is still pause/play. Only `toggle` with a length word in it -
+"length", "brief", "gist" or "full" - is this switch. It changes the next turn's reading, not the one playing now; if
 the user wants that one gone too, run `stop` as well.
 
 **Treat the bare words as this command even without the slash.** "Stop talking",
