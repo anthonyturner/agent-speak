@@ -1,6 +1,6 @@
 ---
-description: Stop, pause, resume, mute this window, or check the speech playing right now
-argument-hint: "stop | pause | resume | toggle | status | mute | unmute"
+description: Stop, pause, resume, mute this window or project, or check the speech playing right now
+argument-hint: "stop | pause | resume | toggle | status | mute [project] | unmute [project]"
 allowed-tools: Bash(node:*)
 ---
 
@@ -46,7 +46,26 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/agent-speak.js" <mute|unmute|mute-status> <sessi
 | --- | --- | --- |
 | `mute`, `be quiet in this window`, `stop speaking here`, `silence this tab` | `mute` | `muted` |
 | `unmute`, `you can talk again`, `speak here again` | `unmute` | `speaking` |
-| `am I muted`, `is this window quiet` | `mute-status` | `muted` / `speaking` |
+| `am I muted`, `is this window quiet` | `mute-status` | `muted` / `muted (project)` / `speaking` |
+
+## Muting the whole project
+
+**`mute project` silences every window of this project** - the ones open now and
+any opened for it later - until the project is unmuted. Other projects keep
+talking. Add `--project` to the same command:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/bin/agent-speak.js" <mute|unmute> <session_id> --project
+```
+
+| Said | Subcommand | The script prints |
+| --- | --- | --- |
+| `mute project`, `mute this whole project`, `quiet every window here`, `mute all windows` | `mute --project` | `muted (project)` |
+| `unmute project`, `the project can talk again` | `unmute --project` | `speaking` / `project speaking, this window still muted` |
+
+Plain `unmute` in a muted project prints `still muted: the project is muted`:
+the window stays quiet until the project is unmuted. Say that to the user rather
+than reporting it as unmuted.
 
 `/agent-speak:speak` and `/agent-speak:play` **still work while muted** - asking
 out loud to hear something is not overruled by a flag set earlier. Mute only

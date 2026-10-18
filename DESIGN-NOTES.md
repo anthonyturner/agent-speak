@@ -125,6 +125,25 @@ Two boundaries make it behave:
   the same failure the cue delete already exists to prevent, arriving later and
   in bulk.
 
+### A project can be muted too, keyed by its transcript folder
+
+Sometimes "be quiet" does mean every window — a project you have stopped
+watching, with new windows still opening on it. Muting each window by hand misses
+the ones not open yet, so the project mute is a marker named after the folder
+Claude Code keeps the project's transcripts in. Every session of the project,
+past or future, has its transcript in that folder, so membership is a path test
+and there is no list of sessions to keep current.
+
+The folder rather than the working directory, because the hook payload names the
+transcript, not the cwd, and the narration path has only a session id. A worktree
+is a separate folder there, so it is a separate project here; that is the same
+line Claude Code itself draws.
+
+The two mutes stack rather than override. A window is quiet if either marker is
+set, so unmuting one window inside a muted project would change nothing — and it
+says so instead of answering `speaking`, which would be a lie the user only
+discovers when the doorbell never rings.
+
 ### Cues queue, because windows were cutting each other off
 
 `Invoke-Speech` kills whatever is playing, regardless of which session queued it.

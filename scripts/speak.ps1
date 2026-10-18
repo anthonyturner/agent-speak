@@ -44,10 +44,12 @@ param(
     [switch]$Queue,
     [switch]$Drain,
     # Per-session quiet, keyed by -SessionId. Mute silences what this window says
-    # uninvited; it never silences -TextFile or -Latest.
+    # uninvited; it never silences -TextFile or -Latest. -Project widens it to
+    # every window of the session's project, including ones not yet open.
     [switch]$Mute,
     [switch]$Unmute,
     [switch]$MuteStatus,
+    [switch]$Project,
     [switch]$RandomVoice,
     [switch]$Print,
     [switch]$Diag,
@@ -350,6 +352,11 @@ $LabelRoot = Join-Path $StateRoot 'speak-labels'
 # A window that has asked for quiet. Present means this session says nothing on
 # its own initiative; see Test-SessionMuted.
 $MuteRoot = Join-Path $StateRoot 'speak-mute'
+# The same, for a whole project, named after its folder under ~/.claude/projects.
+# That folder is the one thing every window of a project shares, including
+# windows opened after the mute, so no list of sessions has to be kept current.
+$ProjectMuteRoot = Join-Path $StateRoot 'speak-mute-projects'
+$TranscriptRoot = Join-Path $env:USERPROFILE '.claude\projects'
 
 function Get-SessionIdFor([string]$transcript) {
     # -SessionId when the caller knows it, otherwise the transcript's file name,
@@ -359,13 +366,40 @@ function Get-SessionIdFor([string]$transcript) {
     return [System.IO.Path]::GetFileNameWithoutExtension($transcript)
 }
 
+function Find-SessionTranscript([string]$id) {
+    if (-not $id -or -not (Test-Path -LiteralPath $TranscriptRoot)) { return '' }
+    $match = Get-ChildItem -LiteralPath $TranscriptRoot -Filter "$id.jsonl" -Recurse -File -ErrorAction SilentlyContinue |
+             Select-Object -First 1
+    if ($match) { return $match.FullName }
+    return ''
+}
+
+function Get-ProjectKeyFor([string]$transcript) {
+    if (-not $transcript) { $transcript = Find-SessionTranscript (Get-SessionIdFor '') }
+    if (-not $transcript) { return '' }
+    return (Split-Path -Leaf (Split-Path -Parent $transcript))
+}
+
+function Get-ProjectMuteMarker([string]$transcript) {
+    $key = Get-ProjectKeyFor $transcript
+    if (-not $key) { return '' }
+    return (Join-Path $ProjectMuteRoot "$key.txt")
+}
+
 function Test-SessionMuted([string]$transcript) {
     # Deliberately consulted only by the paths that speak uninvited. /speak and
     # /play are the user asking out loud for something; a flag they set an hour
     # ago in another context should not overrule the sentence they just typed.
     $id = Get-SessionIdFor $transcript
     if (-not $id) { return $false }
-    return (Test-Path -LiteralPath (Join-Path $MuteRoot "$id.txt"))
+    if (Test-Path -LiteralPath (Join-Path $MuteRoot "$id.txt")) { return $true }
+    # Skips the transcript search outright while no project is muted, which is
+    # nearly always, so the common turn pays nothing for this.
+    if (-not @(Get-ChildItem -LiteralPath $ProjectMuteRoot -Filter *.txt -File -ErrorAction SilentlyContinue).Count) {
+        return $false
+    }
+    $marker = Get-ProjectMuteMarker $transcript
+    return ($marker -and (Test-Path -LiteralPath $marker))
 }
 
 function Get-SessionLabel([string]$transcript) {
@@ -430,17 +464,10 @@ function Get-LatestTranscript {
     if ($Transcript -and (Test-Path -LiteralPath $Transcript)) { return $Transcript }
     # An explicit session id wins: 'the newest file on disk' is a guess, and it is
     # wrong exactly when it matters, which is when several sessions are open.
-    if ($SessionId) {
-        $root = Join-Path $env:USERPROFILE '.claude\projects'
-        if (Test-Path -LiteralPath $root) {
-            $match = Get-ChildItem -LiteralPath $root -Filter "$SessionId.jsonl" -Recurse -File -ErrorAction SilentlyContinue |
-                     Select-Object -First 1
-            if ($match) { return $match.FullName }
-        }
-    }
-    $root = Join-Path $env:USERPROFILE '.claude\projects'
-    if (-not (Test-Path -LiteralPath $root)) { return '' }
-    $f = Get-ChildItem -LiteralPath $root -Filter *.jsonl -Recurse -File -ErrorAction SilentlyContinue |
+    $match = Find-SessionTranscript $SessionId
+    if ($match) { return $match }
+    if (-not (Test-Path -LiteralPath $TranscriptRoot)) { return '' }
+    $f = Get-ChildItem -LiteralPath $TranscriptRoot -Filter *.jsonl -Recurse -File -ErrorAction SilentlyContinue |
          Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($f) { return $f.FullName }
     return ''
@@ -1164,6 +1191,18 @@ function Clear-SessionNarration([string]$owner) {
     }
 }
 
+function Clear-ProjectNarration([string]$transcript) {
+    # Every window of the project, which the queue only knows by session id: an
+    # owner belongs to the project when its transcript sits in the project folder.
+    $folder = Split-Path -Parent $transcript
+    foreach ($f in @(Get-ChildItem -LiteralPath $QueueRoot -Filter *.txt -File -ErrorAction SilentlyContinue)) {
+        $owner = ($f.Name -split '__')[1]
+        if ($owner -and (Test-Path -LiteralPath (Join-Path $folder "$owner.jsonl"))) {
+            Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Clear-StaleDrainLock {
     # A lock is only meaningful while its owner is alive. The drainer speaks in
     # its own process, so anything that kills the speaker - stop, a
@@ -1572,24 +1611,37 @@ try {
         $id = Get-SessionIdFor ''
         if (-not $id) { Write-Output 'no session'; exit 0 }
         $marker = Join-Path $MuteRoot "$id.txt"
+        $transcript = Find-SessionTranscript $id
+        $projectMarker = Get-ProjectMuteMarker $transcript
+        $projectMuted = $projectMarker -and (Test-Path -LiteralPath $projectMarker)
+        if ($Project -and -not $projectMarker) { Write-Output 'no project for this session'; exit 0 }
         if ($MuteStatus) {
-            Write-Output $(if (Test-Path -LiteralPath $marker) { 'muted' } else { 'speaking' })
+            if ($projectMuted) { Write-Output 'muted (project)' }
+            elseif (Test-Path -LiteralPath $marker) { Write-Output 'muted' }
+            else { Write-Output 'speaking' }
             exit 0
         }
         if ($Mute) {
-            if (-not (Test-Path -LiteralPath $MuteRoot)) {
-                New-Item -ItemType Directory -Force -Path $MuteRoot -ErrorAction SilentlyContinue | Out-Null
+            $target = if ($Project) { $projectMarker } else { $marker }
+            $dir = Split-Path -Parent $target
+            if (-not (Test-Path -LiteralPath $dir)) {
+                New-Item -ItemType Directory -Force -Path $dir -ErrorAction SilentlyContinue | Out-Null
             }
-            Set-Content -LiteralPath $marker -Value (Get-Date -Format 'o') -Encoding UTF8
-            # Whatever this window had queued is no longer wanted, and it would
-            # otherwise be spoken by a drainer that is already running.
-            Clear-SessionNarration $id
+            Set-Content -LiteralPath $target -Value (Get-Date -Format 'o') -Encoding UTF8
+            # Whatever was queued is no longer wanted, and it would otherwise be
+            # spoken by a drainer that is already running.
+            if ($Project) { Clear-ProjectNarration $transcript } else { Clear-SessionNarration $id }
             $active = Get-ActiveSpeech
             if ($active -and $active.Kind -ne 'manual') { Stop-PreviousSpeech }
-            Write-Output 'muted'
+            Write-Output $(if ($Project) { 'muted (project)' } else { 'muted' })
+        } elseif ($Project) {
+            Remove-Item -LiteralPath $projectMarker -Force -ErrorAction SilentlyContinue
+            Write-Output $(if (Test-Path -LiteralPath $marker) { 'project speaking, this window still muted' } else { 'speaking' })
         } else {
             Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-            Write-Output 'speaking'
+            # Saying 'speaking' here would be a lie the user only finds out about
+            # an hour later, when the window never rang.
+            Write-Output $(if ($projectMuted) { 'still muted: the project is muted' } else { 'speaking' })
         }
         exit 0
     }

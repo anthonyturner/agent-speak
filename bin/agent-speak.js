@@ -209,14 +209,20 @@ const USAGE = {
     'agent-speak voice <list|set|preview> [name or id]',
     '  --              everything after this is a literal name',
   ].join('\n'),
-  mute: 'agent-speak mute <session_id>',
-  unmute: 'agent-speak unmute <session_id>',
+  mute: [
+    'agent-speak mute <session_id> [--project]',
+    '  --project       every window of this project, including ones opened later',
+  ].join('\n'),
+  unmute: 'agent-speak unmute <session_id> [--project]',
   'mute-status': 'agent-speak mute-status <session_id>',
 };
 
 const KNOWN_OPTIONS = {
   say: new Set(['--session', '--print', '--file']),
   voice: new Set([]),
+  mute: new Set(['--project']),
+  unmute: new Set(['--project']),
+  'mute-status': new Set([]),
 };
 
 const TOP_LEVEL_USAGE = [
@@ -226,7 +232,8 @@ const TOP_LEVEL_USAGE = [
   '  play [session_id]      read the last full response aloud',
   '  speak <file> [label]   speak the contents of a text file',
   '  voice <list|set|preview> [name or id]',
-  '  mute|unmute|mute-status <session_id>',
+  '  mute|unmute <session_id> [--project]',
+  '  mute-status <session_id>',
   '  stop|pause|resume|toggle|status|forward|rewind',
   '  hotkeys|diag',
   '',
@@ -567,19 +574,23 @@ function main() {
     }
 
     // -- per-session quiet ---------------------------------------------------
-    // Keyed by session, because "be quiet" almost always means this window and
-    // not the four others that are working fine.
+    // Keyed by session, because "be quiet" usually means this window and not the
+    // four others that are working fine. --project is for when it does not.
     case 'mute':
     case 'unmute':
     case 'mute-status': {
-      const id = rest[0];
+      if (wantsHelp(rest)) usage(command);
+      rejectUnknownOptions(command, rest);
+      const id = rest.find((a) => !a.startsWith('--'));
       if (!id) {
-        console.error(`agent-speak ${command} <session_id>`);
+        console.error(USAGE[command]);
         process.exit(2);
       }
       const flag =
         command === 'mute' ? '-Mute' : command === 'unmute' ? '-Unmute' : '-MuteStatus';
-      runPowerShell(SPEAK, [flag, '-SessionId', id]);
+      const args = [flag, '-SessionId', id];
+      if (rest.includes('--project')) args.push('-Project');
+      runPowerShell(SPEAK, args);
       return;
     }
 

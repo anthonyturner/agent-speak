@@ -163,8 +163,21 @@ one that you want quiet, you mute:
 /agent-speak:tts unmute    →  speaking
 ```
 
+To quiet a whole project instead — every window open on it, and every window
+you open on it later — mute the project:
+
+```
+/agent-speak:tts mute project      →  muted (project)
+/agent-speak:tts unmute project    →  speaking
+```
+
+Other projects keep talking. A project is the folder Claude Code keeps its
+sessions in under `~/.claude/projects/`, so a git worktree counts as a project
+of its own. Unmuting one window while its project is muted leaves it quiet, and
+says so: `still muted: the project is muted`.
+
 Bare phrases work, as with the other transport words — "be quiet in this window",
-"you can talk again".
+"mute this whole project", "you can talk again".
 
 Mute covers everything the plugin says on its own initiative: cues, narration and
 notifications. It does **not** cover `/agent-speak:speak` or `/agent-speak:play` —
@@ -249,6 +262,7 @@ avoid.
 | `/agent-speak:play` | read the last full response aloud |
 | `/agent-speak:tts pause` | pause, resume, stop, skip, or report status |
 | `/agent-speak:tts mute` | silence this window until you unmute it |
+| `/agent-speak:tts mute project` | silence every window of this project, including new ones |
 | `/agent-speak:speak <text>` | speak a specific piece of text |
 
 And one the agent calls itself, mid-turn:
@@ -370,6 +384,7 @@ Everything lives in `~/.claude/agent-speak/`:
 | `.jev-speaking` | Jev's hold, written by observatory and only read here |
 | `queue/`, `.tts.drain.pid` | lines waiting to be spoken, and who is speaking them |
 | `speak-mute/` | which windows have asked for quiet |
+| `speak-mute-projects/` | which projects have asked for quiet |
 | `.spoken-agents/` | which subagent completions have been announced already |
 | `errors.log` | failures the script swallowed rather than break your turn |
 
