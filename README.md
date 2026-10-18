@@ -185,6 +185,11 @@ asking out loud to hear something is not overruled by a flag you set an hour ago
 Nothing is banked while muted, either: cues are consumed and discarded as they
 arrive, so unmuting never empties an hour of handovers over you.
 
+agent-speak keeps its own entry in the Windows volume mixer at 100%. Windows
+remembers one level per program, and an app that lowers others while it records
+can leave PowerShell saved at zero, which would otherwise silence every cue after
+it. To quiet agent-speak, use `mute`, not the mixer.
+
 `stop` and `mute` are different tools. `stop` kills the sentence playing now;
 `mute` silences the window until you say otherwise.
 
