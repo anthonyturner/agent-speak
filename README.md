@@ -71,7 +71,7 @@ Whenever ElevenLabs can't speak — no key, no network, or credits run out (the
 API answers 402) — speech drops back to the built-in voice without saying why.
 If your key lacks the User read permission, `diag` can't show the quota either,
 so the robotic voice is the first sign you've run out. You can make that
-fallback sound natural too:
+fallback sound natural too: see [Better fallback voice](#better-fallback-voice).
 
 ### Better fallback voice
 
@@ -80,9 +80,14 @@ On Windows 11, the free and open-source
 makes Microsoft's natural voices available to the built-in speech engine, which
 is what the fallback uses.
 
-1. Download the installer from that releases page, run it and click
-   **Install 64-bit**. Leave **Local voice path** empty: on Windows 11 that box
-   isn't needed (it's for hand-unpacked voice packs on older Windows).
+1. From that releases page, download the `x86_x64` zip (or the `ARM64` one on
+   an ARM PC). Extract it to a folder you'll keep, such as
+   `C:\Tools\NaturalVoiceSAPIAdapter`: the install points Windows at the files
+   where they sit, so moving or deleting them later breaks the voices. Run
+   `Installer.exe` from there (it asks for administrator rights) and click
+   **Install** on the 64-bit row. Leave **Local voice path** empty: on
+   Windows 11 that box isn't needed (it's for hand-unpacked voice packs on
+   older Windows).
 2. Run `diag`. The `SAPI5 voices` line should now list voices such as
    `Microsoft Ava Online`, `Microsoft Andrew Online`, `Microsoft Aria Online`,
    `Microsoft Jenny Online` and `Microsoft Guy Online`.
@@ -107,9 +112,13 @@ Know the trade-offs before you rely on it:
   adapter, so don't count on them appearing in the list.
 - **Copy the name exactly.** A `VoiceName` that doesn't match an installed voice
   is ignored, and you get the default voice with no error.
+- **It can stop working after a Windows update.** The adapter relies on
+  details of Windows' own voice files, and its author warns that an update can
+  break it. If the natural voice suddenly goes robotic again, check its
+  releases page for a newer version.
 - **Get it only from the official gexgd0419 GitHub page.** It installs a
-  system-wide speech component (a COM server that every app's speech engine
-  loads), so a copy from anywhere else isn't worth the risk.
+  system-wide speech engine that any program using Windows speech can load, so
+  a copy from anywhere else isn't worth the risk.
 
 ## Talking while it works
 
