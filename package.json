@@ -1,0 +1,18 @@
+{
+  "name": "agent-speak",
+  "version": "0.3.1",
+  "private": true,
+  "description": "Your agent tells you it is done, out loud, in one line - then reads the full answer back on request.",
+  "license": "MIT",
+  "scripts": {
+    "prepare": "husky",
+    "test": "node bin/agent-speak.js doctor"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.3",
+    "@commitlint/config-conventional": "^21.2.3",
+    "@types/node": "^26.6.4",
+    "husky": "^9.1.7",
+    "typescript": "^7.0.2"
+  }
+}

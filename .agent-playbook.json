@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "project": {
+    "name": "agent-speak",
+    "summary": "A Claude Code plugin for Windows that speaks a one-line cue when the agent finishes a turn, and reads the full response aloud on request."
+  },
+  "commands": {
+    "install": "none yet",
+    "build": "none yet",
+    "test": "node bin/agent-speak.js doctor",
+    "lint": "none yet"
+  },
+  "repo": {
+    "defaultBranch": "main"
+  },
+  "autonomy": "merge",
+  "tools": [],
+  "packs": [
+    "node-ts"
+  ]
+}
