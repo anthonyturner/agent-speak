@@ -9,9 +9,9 @@
     "test": "node bin/agent-speak.js doctor"
   },
   "devDependencies": {
-    "@commitlint/cli": "^21.2.3",
+    "@commitlint/cli": "^21.2.4",
     "@commitlint/config-conventional": "^21.2.3",
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "husky": "^9.1.7",
     "typescript": "^7.0.2"
   }
