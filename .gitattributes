@@ -1,0 +1,2 @@
+# Husky hooks are POSIX shell; a CRLF checkout breaks any shell that keeps the CR.
+.husky/* text eol=lf
