@@ -59,7 +59,7 @@ away. A turn with no cue is announced with a generic `Response ready.`
 Never say an issue or pull request number in a cue, a label or a mid-turn line. A
 number means nothing when heard. Name the work by its title, in natural words:
 "Saved filters are ready for review", not "Issue 142, saved filters". A subagent's
-description is spoken when it finishes, so write that without a number too.
+description is spoken when it starts and finishes, so write that without a number too.
 
 Write a session label once, to
 `~/.claude/agent-speak/speak-labels/<session_id>.txt`, naming what this session

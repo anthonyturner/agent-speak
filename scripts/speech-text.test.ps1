@@ -68,6 +68,34 @@ Assert-Spoken 'This is the #1 priority' 'This is the #1 priority'
 Assert-Spoken 'Now do step #3' 'Now do step #3'
 Assert-Read "## Summary`n`nIt works" "Summary`n`nIt works"
 
+# linked hashes, every list separator, and a number right after a reference
+$enDash = [string][char]0x2013
+Assert-Spoken '#12/#13 are done' 'are done'
+Assert-Spoken '#12-#14 are done' 'are done'
+Assert-Spoken 'issue 12 and 13 are done' 'are done'
+Assert-Spoken '#12 and 13 are merged' 'are merged'
+Assert-Spoken "Issues 12$($enDash)14 are done" 'are done'
+Assert-Spoken 'issues 12/13 done' 'done'
+Assert-Spoken 'issue 12/13 done' 'done'
+Assert-Spoken 'issues 12, 13, or 14 are next' 'are next'
+Assert-Spoken 'Issues 12 through 14 are done' 'are done'
+Assert-Spoken 'PR 38 tests pass' 'tests pass'
+Assert-Spoken 'Issue 1258 tests pass' 'tests pass'
+Assert-Spoken 'PR 38 of agent-speak is merged' 'of agent-speak is merged'
+Assert-Spoken 'PR-38 tests pass' 'tests pass'
+
+# a word before the number that shows it is a count
+Assert-Spoken 'Fixed the issue 3 users reported' 'Fixed the issue 3 users reported'
+Assert-Spoken 'Merged the PR 2 reviewers approved' 'Merged the PR 2 reviewers approved'
+Assert-Spoken 'the PR 10 comments' 'the PR 10 comments'
+Assert-Spoken '12 issues 3 PRs' '12 issues 3 PRs'
+Assert-Spoken 'Closed 5 issues and 3 PRs' 'Closed 5 issues and 3 PRs'
+
+# names and ranks stay
+Assert-Spoken 'Tony#1234 joined' 'Tony#1234 joined'
+Assert-Spoken 'the #1 hero' 'the #1 hero'
+Assert-Spoken 'Option #2 is better' 'Option #2 is better'
+
 # text passed to the speak command is left as written
 Assert-Same 'explicit text' 'Issue 5 is done' (Convert-ToSpeech 'Issue 5 is done' -Light)
 

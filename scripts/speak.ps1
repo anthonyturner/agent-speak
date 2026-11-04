@@ -532,26 +532,34 @@ function Get-LastAssistantText([string]$transcript, [int]$minChars = 0) {
 # but references comes back empty, so a caller can tell there is nothing to say.
 function Remove-WorkItemNumbers([string]$s) {
     if (-not $s) { return '' }
-    # a number followed by one of these is a count: "the PR 2 days ago"
-    $notCount = '(?![ \t]+(?:seconds?|minutes?|mins?|hours?|days?|weeks?|months?|years?|times?|tests?|files?|lines?|commits?|more|others?|of)\b)'
-    # one item: "issue 12", "PR#12", "PR-12". No bare list: "PR 12 and 3 tests" has a real 3.
-    $single = '\b(?:issue|pull[- ]request|PR)(?:[ \t]*#|-|[ \t]+(?:(?:number|no\.?)[ \t]+)?#?)\d+\b' + $notCount
+    # This is a backstop: the session brief is what keeps numbers out of speech. On
+    # free text it cannot be perfect, so it follows two simple tests rather than
+    # lists of words. A hash always marks a reference. A bare number after "issue"
+    # or "PR" does too, unless the word before shows it is a count: "the PR 2 days
+    # ago", "12 issues 3 PRs". "the PR 38 tests pass" keeps its number as a result.
+    $s = [regex]::Replace($s, '[ \t]+', ' ')
+    $notCount = '(?<!\b(?:the|this|that|a|an|same) )(?<!\d )'
+    # "issue 12 and 13 are done", but not "PR 12 and 3 tests pass"
+    $andBare = '(?:(?: (?:and|or) |/)\d+\b(?= ?(?:[.,;:!?)]|\r?$|(?:are|is|were|was|have|has|done|merged|fixed|ready)\b)))?'
+    $marked = '\b(?:issue|pull[- ]request|PR)(?: ?#|-| (?:number|no\.?) #)\d+\b' + $andBare
+    $single = $notCount + '\b(?:issue|pull[- ]request|PR) (?:(?:number|no\.?) )?\d+\b' + $andBare
     # the plural announces a list: "issues 12, 13 and 14", "issues 12-14"
-    $plural = '\b(?:issues|pull[- ]requests|PRs)[ \t]+#?\d+\b' + $notCount +
-        '(?:(?:[ \t]*[,&-][ \t]*(?:and[ \t]+)?|[ \t]+(?:and|or|to)[ \t]+)#?\d+\b' + $notCount + ')*'
-    # "web#127", "owner/repo#12". Two letters at least, so C#12 stays.
-    $repo = '(?<![\w&/#.-])(?:[\w.-]+/)?[A-Za-z][\w.-]+#\d+\b'
-    # "#12", but not a rank: "ranked #1", "#1 priority"
-    $hash = '(?<![\w&/#-])(?<!\b(?:ranked?|step|top|number)[ \t])#\d+\b(?![ \t]+(?:priority|pick|spot|seed|place|rank)\b)'
-    $one = "(?i:$single|$plural|$repo|$hash)"
-    $joined = $one + '(?:(?:[ \t]*[,/&][ \t]*(?:and[ \t]+)?|[ \t]+(?:and|or)[ \t]+)' + $one + ')*'
+    $plural = $notCount + '\b(?:issues|pull[- ]requests|PRs) #?\d+\b(?:(?: ?[,&/\u2013\u2014-] ?(?:(?:and|or) )?| (?:and|or|to|through) )#?\d+\b)*'
+    # "web#127", "owner/repo#12". Lower case and two letters at least, so C#12 and a
+    # player tag such as Tony#1234 stay.
+    $repo = '(?-i:(?<![\w&/#.-])(?:[\w.-]+/)?[a-z][\w.-]+#\d+\b)'
+    # "#12", but not a rank or a place in a sequence: "ranked #1", "#1 priority"
+    $hash = '(?<![\w&/#-])(?<!\b(?:ranked?|step|top|number|the|option|round|version|season) )#\d+\b(?! (?:priority|pick|spot|seed|place|rank)\b)' + $andBare
+    $one = "(?i:$marked|$single|$plural|$repo|$hash)"
+    # a hash right after a reference continues it: "#12/#13", "#12-#14"
+    $joined = $one + '(?:(?: ?[,/&\u2013\u2014-] ?(?:(?:and|or) )?| (?:and|or) )(?:' + $one + '|#\d+\b))*'
     # emphasis around it and a possessive after it would otherwise be left behind
     $ref = '[*_`]{0,3}' + $joined + '(?:\x27s|\u2019s)?[*_`]{0,3}'
     # a line that only points at the item, such as "Closes #37", says nothing without it
-    $s = [regex]::Replace($s, '(?mi)^[ \t]*(?:closes|closed|fixes|fixed|resolves|resolved|refs?)[ \t]+' + $ref + '[ \t]*\.?[ \t]*\r?$', '')
-    $s = [regex]::Replace($s, '[ \t]*\([ \t]*' + $ref + '[ \t]*\)', '')
-    $s = [regex]::Replace($s, '(?m)[ \t]*[,:;/\u2014\u2013-]?[ \t]*' + $ref + '(?=[ \t]*[.!?]?[ \t]*\r?$)', '')
-    $s = [regex]::Replace($s, $ref + '[ \t]*[,:;/\u2014\u2013-]*[ \t]*', '')
+    $s = [regex]::Replace($s, '(?mi)^ ?(?:closes|closed|fixes|fixed|resolves|resolved|refs?) ' + $ref + ' ?\.? ?\r?$', '')
+    $s = [regex]::Replace($s, ' ?\( ?' + $ref + ' ?\)', '')
+    $s = [regex]::Replace($s, '(?m) ?[,:;/\u2014\u2013-]? ?' + $ref + '(?= ?[.!?]? ?\r?$)', '')
+    $s = [regex]::Replace($s, $ref + ' ?[,:;/\u2014\u2013-]* ?', '')
     if ($s -notmatch '[\p{L}\p{N}]') { return '' }
     return $s
 }
