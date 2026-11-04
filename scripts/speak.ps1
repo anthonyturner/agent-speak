@@ -434,7 +434,7 @@ function Test-SessionMuted([string]$transcript) {
 
 function Get-SessionLabel([string]$transcript) {
     # an explicit -Preamble always wins, so /speak can label a one-off
-    if ($Preamble) { return $Preamble.Trim() }
+    if ($Preamble) { return (Remove-WorkItemNumbers $Preamble).Trim() }
     $id = Get-SessionIdFor $transcript
     if (-not $id) { return '' }
     $file = Join-Path $LabelRoot "$id.txt"
@@ -532,13 +532,34 @@ function Get-LastAssistantText([string]$transcript, [int]$minChars = 0) {
 # but references comes back empty, so a caller can tell there is nothing to say.
 function Remove-WorkItemNumbers([string]$s) {
     if (-not $s) { return '' }
-    $list = '(?:(?:[ \t]*,[ \t]*(?:and[ \t]+)?|[ \t]+(?:and|or)[ \t]+)#\d+\b|[ \t]+(?:and|or)[ \t]+\d+\b)*'
-    $ref = '(?i:(?:\b(?:issues?|pull[- ]requests?|PRs?)[ \t]+(?:(?:number|no\.?)[ \t]+)?#?\d+\b|(?<![\w&/#])#\d+\b)' + $list + ')'
+    # a number followed by one of these is a count: "the PR 2 days ago"
+    $notCount = '(?![ \t]+(?:seconds?|minutes?|mins?|hours?|days?|weeks?|months?|years?|times?|tests?|files?|lines?|commits?|more|others?|of)\b)'
+    # one item: "issue 12", "PR#12", "PR-12". No bare list: "PR 12 and 3 tests" has a real 3.
+    $single = '\b(?:issue|pull[- ]request|PR)(?:[ \t]*#|-|[ \t]+(?:(?:number|no\.?)[ \t]+)?#?)\d+\b' + $notCount
+    # the plural announces a list: "issues 12, 13 and 14", "issues 12-14"
+    $plural = '\b(?:issues|pull[- ]requests|PRs)[ \t]+#?\d+\b' + $notCount +
+        '(?:(?:[ \t]*[,&-][ \t]*(?:and[ \t]+)?|[ \t]+(?:and|or|to)[ \t]+)#?\d+\b' + $notCount + ')*'
+    # "web#127", "owner/repo#12". Two letters at least, so C#12 stays.
+    $repo = '(?<![\w&/#.-])(?:[\w.-]+/)?[A-Za-z][\w.-]+#\d+\b'
+    # "#12", but not a rank: "ranked #1", "#1 priority"
+    $hash = '(?<![\w&/#-])(?<!\b(?:ranked?|step|top|number)[ \t])#\d+\b(?![ \t]+(?:priority|pick|spot|seed|place|rank)\b)'
+    $one = "(?i:$single|$plural|$repo|$hash)"
+    $joined = $one + '(?:(?:[ \t]*[,/&][ \t]*(?:and[ \t]+)?|[ \t]+(?:and|or)[ \t]+)' + $one + ')*'
+    # emphasis around it and a possessive after it would otherwise be left behind
+    $ref = '[*_`]{0,3}' + $joined + '(?:\x27s|\u2019s)?[*_`]{0,3}'
+    # a line that only points at the item, such as "Closes #37", says nothing without it
+    $s = [regex]::Replace($s, '(?mi)^[ \t]*(?:closes|closed|fixes|fixed|resolves|resolved|refs?)[ \t]+' + $ref + '[ \t]*\.?[ \t]*\r?$', '')
     $s = [regex]::Replace($s, '[ \t]*\([ \t]*' + $ref + '[ \t]*\)', '')
-    $s = [regex]::Replace($s, '(?m)[ \t]*[,:;\u2014\u2013-]?[ \t]*' + $ref + '(?=[ \t]*[.!?]?[ \t]*\r?$)', '')
-    $s = [regex]::Replace($s, $ref + '[ \t]*[,:;\u2014\u2013-]*[ \t]*', '')
+    $s = [regex]::Replace($s, '(?m)[ \t]*[,:;/\u2014\u2013-]?[ \t]*' + $ref + '(?=[ \t]*[.!?]?[ \t]*\r?$)', '')
+    $s = [regex]::Replace($s, $ref + '[ \t]*[,:;/\u2014\u2013-]*[ \t]*', '')
     if ($s -notmatch '[\p{L}\p{N}]') { return '' }
     return $s
+}
+
+# A line an agent wrote to be spoken: a cue or a mid-turn line. Text passed to the
+# speak command goes through Convert-ToSpeech alone, because a person chose it.
+function Convert-SpokenLine([string]$s) {
+    return Convert-ToSpeech (Remove-WorkItemNumbers $s) -Light
 }
 
 function Convert-ToSpeech([string]$s, [switch]$Light) {
@@ -1891,7 +1912,7 @@ try {
         if (Test-SessionMuted '') { exit 0 }
         if ($Queue -and $TextFile) {
             $raw = Get-Content -LiteralPath $TextFile -Raw -Encoding UTF8
-            $line = Convert-ToSpeech (Remove-WorkItemNumbers $raw) -Light
+            $line = Convert-SpokenLine $raw
             if (-not $line) { exit 0 }
             if ($line.Length -gt $MaxCharsNarration) { $line = $line.Substring(0, $MaxCharsNarration) }
             $line = Add-SessionLabel (Get-SessionLabel '') $line
@@ -1993,7 +2014,7 @@ try {
         $spoken = ''
         if ($EndOfTurn -eq 'gist') { $spoken = Select-Gist (Convert-ToSpeech $newest) }
         if (-not $spoken) {
-            $spoken = Convert-ToSpeech (Remove-WorkItemNumbers $cue) -Light
+            $spoken = Convert-SpokenLine $cue
             if (-not $spoken) { $spoken = $FallbackCue }
         }
         $line = Add-SessionLabel $label $spoken

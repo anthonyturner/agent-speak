@@ -15,7 +15,7 @@ unlistenable prose and no idea whether you need to act.
 So this speaks a **handover** instead — one sentence, under fifteen words,
 saying what finished and what you do next:
 
-> "Issue 466, notification toast layout. The draft pull request is up and ready
+> "Notification toast layout. The draft pull request is up and ready
 > for review."
 
 The full answer stays on screen, one command away. The agent writes the cue
