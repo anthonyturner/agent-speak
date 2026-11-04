@@ -4,7 +4,7 @@ Your agent tells you it's done — out loud, in one line. Then reads the whole
 answer back only if you ask.
 
 ```
-"Issue 466, notification toast layout.
+"Notification toast layout.
  The draft pull request is up and ready for review."
 ```
 
@@ -133,8 +133,8 @@ line and carries on working:
 **Each subagent says when it starts and when it's done.** Run a pipeline and you
 hear every handover go past, in order:
 
-> "The dev agent finished: implement issue 561."
-> "Starting the QA agent: review pull request 562."
+> "The dev agent finished: implement saved filters."
+> "Starting the QA agent: review saved filters."
 
 The start line comes from a `PreToolUse` hook on the `Agent` tool, which is the
 only point where both the agent's type and its one-line description are known.

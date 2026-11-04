@@ -1,12 +1,12 @@
 {
   "name": "agent-speak",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Your agent tells you it is done, out loud, in one line - then reads the full answer back on request.",
   "license": "MIT",
   "scripts": {
     "prepare": "husky",
-    "test": "node bin/agent-speak.js doctor"
+    "test": "node bin/agent-speak.js doctor && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/speech-text.test.ps1"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.2.3",

@@ -434,14 +434,14 @@ function Test-SessionMuted([string]$transcript) {
 
 function Get-SessionLabel([string]$transcript) {
     # an explicit -Preamble always wins, so /speak can label a one-off
-    if ($Preamble) { return $Preamble.Trim() }
+    if ($Preamble) { return (Remove-WorkItemNumbers $Preamble).Trim() }
     $id = Get-SessionIdFor $transcript
     if (-not $id) { return '' }
     $file = Join-Path $LabelRoot "$id.txt"
     if (-not (Test-Path -LiteralPath $file)) { return '' }
     try {
         $line = @(Get-Content -LiteralPath $file -TotalCount 1 -Encoding UTF8)[0]
-        if ($line) { return ([string]$line).Trim() }
+        if ($line) { return (Remove-WorkItemNumbers ([string]$line)).Trim() }
     } catch { }
     return ''
 }
@@ -525,6 +525,51 @@ function Get-LastAssistantText([string]$transcript, [int]$minChars = 0) {
     return $newest
 }
 
+# An issue or pull request number means nothing when heard, so spoken text never
+# carries one: "#465, Load YouTube players" is heard as "Load YouTube players".
+# The separator after a reference goes with it, and so does one left dangling
+# before it at the end of a line ("hotkey cut, issue 1258"). Text that was nothing
+# but references comes back empty, so a caller can tell there is nothing to say.
+function Remove-WorkItemNumbers([string]$s) {
+    if (-not $s) { return '' }
+    # This is a backstop: the session brief is what keeps numbers out of speech. On
+    # free text it cannot be perfect, so it follows two simple tests rather than
+    # lists of words. A hash always marks a reference. A bare number after "issue"
+    # or "PR" does too, unless the word before shows it is a count: "the PR 2 days
+    # ago", "12 issues 3 PRs". "the PR 38 tests pass" keeps its number as a result.
+    $s = [regex]::Replace($s, '[ \t]+', ' ')
+    $notCount = '(?<!\b(?:the|this|that|a|an|same|my|your|our) )(?<!\d )'
+    # "issue 12 and 13 are done", but not "PR 12 and 3 tests pass"
+    $andBare = '(?:(?: (?:and|or) |/)\d+\b(?= ?(?:[.,;:!?)]|\r?$|(?:are|is|were|was|have|has|done|merged|fixed|ready)\b)))?'
+    $marked = '\b(?:issue|pull[- ]request|PR)(?: ?#|-| (?:number|no\.?) #)\d+\b' + $andBare
+    $single = $notCount + '\b(?:issue|pull[- ]request|PR) (?:(?:number|no\.?) )?\d+\b' + $andBare
+    # the plural announces a list: "issues 12, 13 and 14", "issues 12-14"
+    $plural = $notCount + '\b(?:issues|pull[- ]requests|PRs) #?\d+\b(?:(?: ?[,&/\u2013\u2014-] ?(?:(?:and|or) )?| (?:and|or|to|through) )#?\d+\b)*'
+    # "web#127", "owner/repo#12". Lower case and two letters at least, so C#12 and a
+    # player tag such as Tony#1234 stay.
+    $repo = '(?-i:(?<![\w&/#.-])(?:[\w.-]+/)?[a-z][\w.-]+#\d+\b)'
+    # "#12", but not a rank or a place in a sequence: "ranked #1", "#1 priority"
+    $hash = '(?<![\w&/#-])(?<!\b(?:ranked?|step|top|number|the|option|round|version|season) )#\d+\b(?! (?:priority|pick|spot|seed|place|rank)\b)' + $andBare
+    $one = "(?i:$marked|$single|$plural|$repo|$hash)"
+    # a hash right after a reference continues it: "#12/#13", "#12-#14"
+    $joined = $one + '(?:(?: ?[,/&\u2013\u2014-] ?(?:(?:and|or) )?| (?:and|or) )(?>' + $one + '|#\d+\b))*'
+    # emphasis around it and a possessive after it would otherwise be left behind
+    $ref = '[*_`]{0,3}' + $joined + '(?:\x27s|\u2019s)?[*_`]{0,3}'
+    # a line that only points at the item, such as "Closes #37", says nothing without it
+    $s = [regex]::Replace($s, '(?mi)^ ?(?:closes|closed|fixes|fixed|resolves|resolved|refs?) ' + $ref + ' ?\.? ?\r?$', '')
+    $s = [regex]::Replace($s, ' ?\( ?' + $ref + ' ?\)', '')
+    $s = [regex]::Replace($s, '(?m) ?[,:;/\u2014\u2013-]? ?' + $ref + '(?= ?[.!?]? ?\r?$)', '')
+    $s = [regex]::Replace($s, $ref + ' ?[,:;/\u2014\u2013-]* ?', '')
+    if ($s -notmatch '[\p{L}\p{N}]') { return '' }
+    return $s
+}
+
+# A line an agent wrote to be spoken: a cue or a mid-turn line. Text passed to the
+# speak command goes through Convert-ToSpeech alone, because a person chose it.
+function Convert-SpokenLine([string]$s) {
+    return Convert-ToSpeech (Remove-WorkItemNumbers $s) -Light
+}
+
 function Convert-ToSpeech([string]$s, [switch]$Light) {
     if (-not $s) { return '' }
     if (-not $Light) {
@@ -532,6 +577,8 @@ function Convert-ToSpeech([string]$s, [switch]$Light) {
         $s = [regex]::Replace($s, '(?s)```.*?```', "`n`n")
         # markdown links and images: keep the label, drop the target
         $s = [regex]::Replace($s, '!?\[([^\]]*)\]\([^)]*\)', '$1')
+        # before the heading markers below, which would leave "#465" as "465"
+        $s = Remove-WorkItemNumbers $s
         # inline code: keep the words, drop the backticks
         $s = $s -replace '`', ''
         # horizontal rules say nothing; table rows become sentences so a
@@ -1873,7 +1920,8 @@ try {
         if (Test-SessionMuted '') { exit 0 }
         if ($Queue -and $TextFile) {
             $raw = Get-Content -LiteralPath $TextFile -Raw -Encoding UTF8
-            $line = Convert-ToSpeech $raw -Light
+            $line = Convert-SpokenLine $raw
+            if (-not $line) { exit 0 }
             if ($line.Length -gt $MaxCharsNarration) { $line = $line.Substring(0, $MaxCharsNarration) }
             $line = Add-SessionLabel (Get-SessionLabel '') $line
             if ($Print) { Write-Output $line; exit 0 }
@@ -1974,8 +2022,8 @@ try {
         $spoken = ''
         if ($EndOfTurn -eq 'gist') { $spoken = Select-Gist (Convert-ToSpeech $newest) }
         if (-not $spoken) {
-            if (-not $cue) { $cue = $FallbackCue }
-            $spoken = Convert-ToSpeech $cue -Light
+            $spoken = Convert-SpokenLine $cue
+            if (-not $spoken) { $spoken = $FallbackCue }
         }
         $line = Add-SessionLabel $label $spoken
         if ($Print) { Write-Output $line; exit 0 }
