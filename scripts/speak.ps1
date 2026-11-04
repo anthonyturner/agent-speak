@@ -538,7 +538,7 @@ function Remove-WorkItemNumbers([string]$s) {
     # or "PR" does too, unless the word before shows it is a count: "the PR 2 days
     # ago", "12 issues 3 PRs". "the PR 38 tests pass" keeps its number as a result.
     $s = [regex]::Replace($s, '[ \t]+', ' ')
-    $notCount = '(?<!\b(?:the|this|that|a|an|same) )(?<!\d )'
+    $notCount = '(?<!\b(?:the|this|that|a|an|same|my|your|our) )(?<!\d )'
     # "issue 12 and 13 are done", but not "PR 12 and 3 tests pass"
     $andBare = '(?:(?: (?:and|or) |/)\d+\b(?= ?(?:[.,;:!?)]|\r?$|(?:are|is|were|was|have|has|done|merged|fixed|ready)\b)))?'
     $marked = '\b(?:issue|pull[- ]request|PR)(?: ?#|-| (?:number|no\.?) #)\d+\b' + $andBare
@@ -552,7 +552,7 @@ function Remove-WorkItemNumbers([string]$s) {
     $hash = '(?<![\w&/#-])(?<!\b(?:ranked?|step|top|number|the|option|round|version|season) )#\d+\b(?! (?:priority|pick|spot|seed|place|rank)\b)' + $andBare
     $one = "(?i:$marked|$single|$plural|$repo|$hash)"
     # a hash right after a reference continues it: "#12/#13", "#12-#14"
-    $joined = $one + '(?:(?: ?[,/&\u2013\u2014-] ?(?:(?:and|or) )?| (?:and|or) )(?:' + $one + '|#\d+\b))*'
+    $joined = $one + '(?:(?: ?[,/&\u2013\u2014-] ?(?:(?:and|or) )?| (?:and|or) )(?>' + $one + '|#\d+\b))*'
     # emphasis around it and a possessive after it would otherwise be left behind
     $ref = '[*_`]{0,3}' + $joined + '(?:\x27s|\u2019s)?[*_`]{0,3}'
     # a line that only points at the item, such as "Closes #37", says nothing without it

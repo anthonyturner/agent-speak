@@ -96,6 +96,14 @@ Assert-Spoken 'Tony#1234 joined' 'Tony#1234 joined'
 Assert-Spoken 'the #1 hero' 'the #1 hero'
 Assert-Spoken 'Option #2 is better' 'Option #2 is better'
 
+# a long list of references must not make the clean-up slow
+$longList = 'Merged ' + ((1001..1020 | ForEach-Object { "#$_" }) -join ', ') + ' today.'
+$timer = [System.Diagnostics.Stopwatch]::StartNew()
+Assert-Spoken $longList 'Merged today.'
+$timer.Stop()
+if ($timer.ElapsedMilliseconds -ge 1000) { Write-Output "FAIL: 20 references took $($timer.ElapsedMilliseconds) ms"; $failed++ }
+Assert-Spoken 'Merged my PR 2 days ago.' 'Merged my PR 2 days ago.'
+
 # text passed to the speak command is left as written
 Assert-Same 'explicit text' 'Issue 5 is done' (Convert-ToSpeech 'Issue 5 is done' -Light)
 
