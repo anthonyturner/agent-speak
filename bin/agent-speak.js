@@ -47,8 +47,13 @@ response is one command away. Do not summarise your response; the cue is a
 doorbell, not an abstract. A turn with no cue is announced with a generic
 "Response ready.", which means the step was missed.
 
-Once per session, also write a label naming what this session is about - an
-issue number and title, or the repository and task - to:
+Never say an issue or pull request number in anything spoken: cue, label or
+mid-turn line. A number means nothing when heard. Name the work by its title, in
+natural words: "Saved filters are ready for review", not "Issue 142, saved
+filters".
+
+Once per session, also write a label naming what this session is about, in
+words - the issue's title, or the repository and task - to:
   ${path.join(STATE_DIR, 'speak-labels', '<session_id>.txt')}
 It is spoken before the cue, so the user can tell which window is talking.
 Keep it short, and rewrite it if the session moves on to something else.

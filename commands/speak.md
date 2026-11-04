@@ -56,9 +56,13 @@ user does next. No paths, URLs, code or markdown. Do not summarise the response 
 the cue is a doorbell, not an abstract, and the full response is one command
 away. A turn with no cue is announced with a generic `Response ready.`
 
+Never say an issue or pull request number in a cue, a label or a mid-turn line. A
+number means nothing when heard. Name the work by its title, in natural words:
+"Saved filters are ready for review", not "Issue 142, saved filters".
+
 Write a session label once, to
 `~/.claude/agent-speak/speak-labels/<session_id>.txt`, naming what this session
-is about - an issue number and title, or the repository and task. It is spoken
+is about, in words - the issue's title, or the repository and task. It is spoken
 before the cue so the user can tell which window is talking. Rewrite it when the
 session moves on.
 

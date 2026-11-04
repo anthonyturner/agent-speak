@@ -441,7 +441,7 @@ function Get-SessionLabel([string]$transcript) {
     if (-not (Test-Path -LiteralPath $file)) { return '' }
     try {
         $line = @(Get-Content -LiteralPath $file -TotalCount 1 -Encoding UTF8)[0]
-        if ($line) { return ([string]$line).Trim() }
+        if ($line) { return (Remove-WorkItemNumbers ([string]$line)).Trim() }
     } catch { }
     return ''
 }
@@ -525,6 +525,22 @@ function Get-LastAssistantText([string]$transcript, [int]$minChars = 0) {
     return $newest
 }
 
+# An issue or pull request number means nothing when heard, so spoken text never
+# carries one: "#465, Load YouTube players" is heard as "Load YouTube players".
+# The separator after a reference goes with it, and so does one left dangling
+# before it at the end of a line ("hotkey cut, issue 1258"). Text that was nothing
+# but references comes back empty, so a caller can tell there is nothing to say.
+function Remove-WorkItemNumbers([string]$s) {
+    if (-not $s) { return '' }
+    $list = '(?:(?:[ \t]*,[ \t]*(?:and[ \t]+)?|[ \t]+(?:and|or)[ \t]+)#\d+\b|[ \t]+(?:and|or)[ \t]+\d+\b)*'
+    $ref = '(?i:(?:\b(?:issues?|pull[- ]requests?|PRs?)[ \t]+(?:(?:number|no\.?)[ \t]+)?#?\d+\b|(?<![\w&/#])#\d+\b)' + $list + ')'
+    $s = [regex]::Replace($s, '[ \t]*\([ \t]*' + $ref + '[ \t]*\)', '')
+    $s = [regex]::Replace($s, '(?m)[ \t]*[,:;\u2014\u2013-]?[ \t]*' + $ref + '(?=[ \t]*[.!?]?[ \t]*\r?$)', '')
+    $s = [regex]::Replace($s, $ref + '[ \t]*[,:;\u2014\u2013-]*[ \t]*', '')
+    if ($s -notmatch '[\p{L}\p{N}]') { return '' }
+    return $s
+}
+
 function Convert-ToSpeech([string]$s, [switch]$Light) {
     if (-not $s) { return '' }
     if (-not $Light) {
@@ -532,6 +548,8 @@ function Convert-ToSpeech([string]$s, [switch]$Light) {
         $s = [regex]::Replace($s, '(?s)```.*?```', "`n`n")
         # markdown links and images: keep the label, drop the target
         $s = [regex]::Replace($s, '!?\[([^\]]*)\]\([^)]*\)', '$1')
+        # before the heading markers below, which would leave "#465" as "465"
+        $s = Remove-WorkItemNumbers $s
         # inline code: keep the words, drop the backticks
         $s = $s -replace '`', ''
         # horizontal rules say nothing; table rows become sentences so a
@@ -1873,7 +1891,8 @@ try {
         if (Test-SessionMuted '') { exit 0 }
         if ($Queue -and $TextFile) {
             $raw = Get-Content -LiteralPath $TextFile -Raw -Encoding UTF8
-            $line = Convert-ToSpeech $raw -Light
+            $line = Convert-ToSpeech (Remove-WorkItemNumbers $raw) -Light
+            if (-not $line) { exit 0 }
             if ($line.Length -gt $MaxCharsNarration) { $line = $line.Substring(0, $MaxCharsNarration) }
             $line = Add-SessionLabel (Get-SessionLabel '') $line
             if ($Print) { Write-Output $line; exit 0 }
@@ -1974,8 +1993,8 @@ try {
         $spoken = ''
         if ($EndOfTurn -eq 'gist') { $spoken = Select-Gist (Convert-ToSpeech $newest) }
         if (-not $spoken) {
-            if (-not $cue) { $cue = $FallbackCue }
-            $spoken = Convert-ToSpeech $cue -Light
+            $spoken = Convert-ToSpeech (Remove-WorkItemNumbers $cue) -Light
+            if (-not $spoken) { $spoken = $FallbackCue }
         }
         $line = Add-SessionLabel $label $spoken
         if ($Print) { Write-Output $line; exit 0 }
